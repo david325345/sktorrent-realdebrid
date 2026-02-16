@@ -30,19 +30,52 @@ async function searchSKT(query){
     try{
         const r=await axios.get(SEARCH_URL,{params:{search:query,category:0,active:0},headers:{"User-Agent":"Mozilla/5.0"},timeout:10000});
         const $=cheerio.load(r.data);const results=[];
-        $('a[href*="details.php?id="]').each((i,el)=>{
-            const href=$(el).attr("href")||"";const m=href.match(/id=([a-fA-F0-9]{40})/);if(!m)return;
-            const hash=m[1].toLowerCase();if(results.find(r=>r.hash===hash))return;
-            const name=$(el).attr("title")||$(el).text().trim();if(!name||name.length<3)return;
-            const td=$(el).closest("td");const block=td.text().replace(/\s+/g,' ').trim();
+
+        // Metoda 1: obrázková verze torrents_v2 - hledej všechny details.php linky
+        $('a[href*="details.php"]').each((i,el)=>{
+            const href=$(el).attr("href")||"";
+            const m=href.match(/id=([a-fA-F0-9]{40})/);
+            if(!m)return;
+            const hash=m[1].toLowerCase();
+            if(results.find(r=>r.hash===hash))return;
+
+            // Název: title atribut (tooltip) > text obsah > name z URL
+            let name=$(el).attr("title")||"";
+            if(!name||name.length<3) name=$(el).text().trim();
+            if(!name||name.length<3){
+                const nameM=href.match(/name=([^&]+)/);
+                if(nameM) name=decodeURIComponent(nameM[1]).replace(/-/g,' ');
+            }
+            if(!name||name.length<3)return;
+
+            // Metadata z okolního TD
+            const td=$(el).closest("td");
+            const block=td.text().replace(/\s+/g,' ').trim();
             const cat=td.find("b").first().text().trim();
-            const szM=block.match(/Velkost\s([^|]+)/i);const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
-            const catL=cat.toLowerCase();
-            if(catL&&!catL.includes("film")&&!catL.includes("seri")&&!catL.includes("dokument")&&!catL.includes("tv"))return;
+            const szM=block.match(/Velkost\s([^|]+)/i);
+            const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
+
+            // Žádný filtr kategorií - zobrazíme vše co se najde
             results.push({name,hash,size:szM?szM[1].trim():"?",seeds:sdM?parseInt(sdM[1]):0,cat});
         });
-        if(results.length===0){$("table.lista tr").each((i,row)=>{const cells=$(row).find("td.lista");if(cells.length<2)return;const link=cells.eq(1).find("a[href*='details.php']");const href=link.attr("href")||"";const m=href.match(/id=([a-fA-F0-9]{40})/);if(!m)return;const hash=m[1].toLowerCase();if(results.find(r=>r.hash===hash))return;results.push({name:link.text().trim(),hash,size:cells.eq(5)?.text().trim()||"?",seeds:parseInt(cells.eq(6)?.text().trim())||0,cat:cells.eq(0)?.text().trim()||""});});}
-        console.log(`[SKT] Nalezeno: ${results.length}`);return results;
+
+        // Metoda 2: fallback tabulková verze (torrents.php)
+        if(results.length===0){
+            $("table.lista tr").each((i,row)=>{
+                const cells=$(row).find("td.lista");
+                if(cells.length<2)return;
+                const link=cells.eq(1).find("a[href*='details.php']");
+                const href=link.attr("href")||"";
+                const m=href.match(/id=([a-fA-F0-9]{40})/);
+                if(!m)return;
+                const hash=m[1].toLowerCase();
+                if(results.find(r=>r.hash===hash))return;
+                results.push({name:link.text().trim(),hash,size:cells.eq(5)?.text().trim()||"?",seeds:parseInt(cells.eq(6)?.text().trim())||0,cat:cells.eq(0)?.text().trim()||""});
+            });
+        }
+
+        console.log(`[SKT] Nalezeno: ${results.length}`);
+        return results;
     }catch(e){console.error("[SKT]",e.message);return[];}
 }
 
