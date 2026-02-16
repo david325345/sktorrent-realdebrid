@@ -126,11 +126,27 @@ async function resolveRD(token,hash,season,episode){
 }
 
 function buildQueries(title,original,type,season,episode){
-    const q=new Set();[title,original].map(t=>t.replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim()).filter(Boolean).forEach(base=>{
+    const q=[];
+    const bases=[...new Set([title,original].map(t=>t.replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim()).filter(Boolean))];
+    
+    for(const base of bases){
         const nd=removeDiacritics(base),sh=shortenTitle(nd);
-        if(type==='series'&&season&&episode){const ep=` S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`;[base,nd,sh].forEach(b=>{q.add(b+ep);q.add((b+ep).replace(/[':]/g,''));});[base,nd,sh].forEach(b=>q.add(b));}
-        else{[base,nd,sh].forEach(b=>{q.add(b);q.add(b.replace(/[':]/g,''));});}
-    });return[...q];
+        const variants=[...new Set([base,nd,sh].flatMap(b=>[b,b.replace(/[':]/g,'')]).filter(Boolean))];
+        
+        if(type==='series'&&season&&episode){
+            const ep=`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`;
+            const se=`S${String(season).padStart(2,'0')}`;
+            // 1. Přesná epizoda: "Archer S01E01"
+            for(const v of variants){if(!q.includes(v+' '+ep))q.push(v+' '+ep);}
+            // 2. Celá série (batch): "Archer S01"
+            for(const v of variants){if(!q.includes(v+' '+se))q.push(v+' '+se);}
+            // 3. Holý název jako poslední fallback: "Archer"
+            for(const v of variants){if(!q.includes(v))q.push(v);}
+        } else {
+            for(const v of variants){if(!q.includes(v))q.push(v);}
+        }
+    }
+    return q;
 }
 
 const app=express();
@@ -151,18 +167,51 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     try{
         const titles=await getTitle(imdbId);if(!titles)return res.json({streams:[]});
         const queries=buildQueries(titles.title,titles.original,type,season,episode);
-        let torrents=[];for(const q of queries){torrents=await searchSKT(q);if(torrents.length>0)break;}
+        let torrents=[];
+        const epTag=season!==undefined?`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`:'';
+        const seTag=season!==undefined?`S${String(season).padStart(2,'0')}`:'';
+        
+        for(const q of queries){
+            torrents=await searchSKT(q);
+            if(torrents.length>0){
+                // Pro seriály: filtruj výsledky podle sezóny
+                if(type==='series'&&season!==undefined){
+                    // Pokud query hledala přesnou epizodu (S01E01) — neber výsledky co nemají S01 v názvu
+                    if(q.includes(epTag)){
+                        const filtered=torrents.filter(t=>{
+                            const up=t.name.toUpperCase();
+                            return up.includes(epTag)||up.includes(seTag);
+                        });
+                        if(filtered.length>0){torrents=filtered;break;}
+                        // Žádný match na epizodu — zkus další query
+                        torrents=[];continue;
+                    }
+                    // Pokud query hledala sezónu (S01) — filtruj jen tuto sezónu
+                    if(q.includes(seTag)&&!q.includes(epTag)){
+                        const filtered=torrents.filter(t=>t.name.toUpperCase().includes(seTag));
+                        if(filtered.length>0){torrents=filtered;break;}
+                        torrents=[];continue;
+                    }
+                    // Holý název (fallback) — filtruj jen torrenty obsahující správnou sezónu
+                    const filtered=torrents.filter(t=>t.name.toUpperCase().includes(seTag));
+                    if(filtered.length>0){torrents=filtered;break;}
+                    // Pokud nic neobsahuje sezónu, vrať prázdno
+                    torrents=[];continue;
+                }
+                break;
+            }
+        }
         if(!torrents.length)return res.json({streams:[]});
         const proto=req.headers['x-forwarded-proto']||req.protocol;
         const host=req.headers['x-forwarded-host']||req.get('host');
         const baseUrl=`${proto}://${host}`;
         const streams=[];const seen=new Set();
-        // Rok z OMDb pro filtrování (např. "2005" nebo "2020–2023" pro seriály)
-        const omdbYear=titles.year?titles.year.replace(/[–-].*$/,'').trim():"";
+        // Rok z OMDb - kontroluj jen u filmů
+        const omdbYear=(type==='movie'&&titles.year)?titles.year.replace(/[–-].*$/,'').trim():"";
         for(const t of torrents){
             if(isMultiSeason(t.name)||seen.has(t.hash))continue;seen.add(t.hash);
 
-            // Kontrola roku: pokud torrent obsahuje 4ciferný rok a OMDb taky, musí se shodovat
+            // Kontrola roku jen u filmů
             if(omdbYear){
                 const yearMatches=t.name.match(/\b(19|20)\d{2}\b/g);
                 if(yearMatches&&yearMatches.length>0){
@@ -176,7 +225,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             const clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
             const se=season!==undefined?`/${season}/${episode}`:'';
             const proxyUrl=`${baseUrl}/${token}/play/${t.hash}${se}/video.mp4`;
-            streams.push({name:"SKT+RD",description:`${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid | ${t.cat}`,url:proxyUrl,behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}});
+            streams.push({name:`SKT+RD\n${t.cat||'SKT'}`,description:`${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`,url:proxyUrl,behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}});
             if(streams.length>=15)break;
         }
         console.log(`✅ ${streams.length} streams`);return res.json({streams});
