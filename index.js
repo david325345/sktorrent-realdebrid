@@ -168,7 +168,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     }catch(e){console.error("Error:",e.message);return res.json({streams:[]});}
 });
 
-// PLAY - resolve RD + proxy video
+// PLAY - resolve RD a redirect (žádný proxy)
 app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     const{token,hash}=req.params;
     const season=req.params.season?parseInt(req.params.season):undefined;
@@ -176,17 +176,8 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     console.log(`\n▶️ Play: ${hash} S${season??'-'}E${episode??'-'}`);
     const streamUrl=await resolveRD(token,hash,season,episode);
     if(!streamUrl){console.error("[Play] ❌ Failed");return res.status(502).send("Failed to resolve via Real-Debrid");}
-    console.log(`[Play] Proxying: ${streamUrl.slice(0,80)}...`);
-    try{
-        const headers={};if(req.headers.range)headers.Range=req.headers.range;
-        const vr=await axios.get(streamUrl,{responseType:'stream',headers,timeout:30000,maxRedirects:5});
-        if(vr.headers['content-type'])res.setHeader('Content-Type',vr.headers['content-type']);
-        if(vr.headers['content-length'])res.setHeader('Content-Length',vr.headers['content-length']);
-        if(vr.headers['content-range'])res.setHeader('Content-Range',vr.headers['content-range']);
-        if(vr.headers['accept-ranges'])res.setHeader('Accept-Ranges',vr.headers['accept-ranges']);
-        res.status(vr.status);vr.data.pipe(res);
-        req.on('close',()=>{vr.data.destroy();});
-    }catch(pe){console.error("[Play] Proxy error:",pe.message);if(!res.headersSent)res.status(502).send("Stream proxy failed");}
+    console.log(`[Play] ✅ Redirect → ${streamUrl.slice(0,80)}...`);
+    return res.redirect(302,streamUrl);
 });
 
 app.get("/api/verify/:token",async(req,res)=>{res.setHeader("Access-Control-Allow-Origin","*");const u=await rdVerify(req.params.token);res.json(u?{success:true,username:u.username,type:u.type,expiration:u.expiration}:{success:false});});
