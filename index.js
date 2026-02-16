@@ -136,11 +136,21 @@ function buildQueries(title,original,type,season,episode){
         if(type==='series'&&season&&episode){
             const ep=`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`;
             const se=`S${String(season).padStart(2,'0')}`;
+            const sn=String(season);
             // 1. Přesná epizoda: "Archer S01E01"
             for(const v of variants){if(!q.includes(v+' '+ep))q.push(v+' '+ep);}
             // 2. Celá série (batch): "Archer S01"
             for(const v of variants){if(!q.includes(v+' '+se))q.push(v+' '+se);}
-            // 3. Holý název jako poslední fallback: "Archer"
+            // 3. CZ/SK formáty: "Archer 1.serie", "Archer 1. seria", "Archer serie 1"
+            for(const v of variants){
+                const a=v+' '+sn+'.serie';if(!q.includes(a))q.push(a);
+                const b=v+' '+sn+'. serie';if(!q.includes(b))q.push(b);
+                const c=v+' '+sn+'.seria';if(!q.includes(c))q.push(c);
+                const d=v+' '+sn+'. seria';if(!q.includes(d))q.push(d);
+                const e2=v+' serie '+sn;if(!q.includes(e2))q.push(e2);
+                const f=v+' seria '+sn;if(!q.includes(f))q.push(f);
+            }
+            // 4. Holý název jako poslední fallback: "Archer"
             for(const v of variants){if(!q.includes(v))q.push(v);}
         } else {
             for(const v of variants){if(!q.includes(v))q.push(v);}
@@ -171,6 +181,17 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         let batchTorrents=[];
         const epTag=season!==undefined?`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`:'';
         const seTag=season!==undefined?`S${String(season).padStart(2,'0')}`:'';
+        const sn=season!==undefined?String(season):'';
+        
+        // Kontrola jestli název obsahuje správnou sezónu (S01 nebo 1.serie/seria)
+        const matchesSeason=(name)=>{
+            const up=name.toUpperCase();
+            if(up.includes(seTag))return true;
+            // CZ/SK: "1.serie", "1. serie", "1.seria", "serie 1", "seria 1"
+            const czPat=new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i');
+            return czPat.test(name);
+        };
+        const matchesEpisode=(name)=>name.toUpperCase().includes(epTag);
         
         if(type==='series'&&season!==undefined){
             // 1. Hledej přesnou epizodu
@@ -178,32 +199,32 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                 if(!q.toUpperCase().includes(epTag))continue;
                 const found=await searchSKT(q);
                 if(found.length>0){
-                    const filtered=found.filter(t=>{const up=t.name.toUpperCase();return up.includes(epTag)||up.includes(seTag);});
+                    const filtered=found.filter(t=>matchesEpisode(t.name)||matchesSeason(t.name));
                     if(filtered.length>0){torrents=filtered;break;}
                 }
             }
-            // 2. Hledej i batch (S01) — vždy, i když máme epizodu
+            // 2. Hledej i batch (S01, 1.serie) — vždy, i když máme epizodu
             for(const q of queries){
-                if(!q.toUpperCase().includes(seTag)||q.toUpperCase().includes(epTag))continue;
+                const qu=q.toUpperCase();
+                if(qu.includes(epTag))continue;
+                if(!qu.includes(seTag)&&!/\bseri[ea]\b/i.test(q)&&!new RegExp(`\\b${sn}\\b`).test(q))continue;
                 const found=await searchSKT(q);
                 if(found.length>0){
-                    const filtered=found.filter(t=>{
-                        const up=t.name.toUpperCase();
-                        return up.includes(seTag)&&!up.includes(epTag);
-                    });
+                    const filtered=found.filter(t=>matchesSeason(t.name)&&!matchesEpisode(t.name));
                     if(filtered.length>0){batchTorrents=filtered;break;}
                 }
             }
             // 3. Fallback: holý název filtrovaný na sezónu
             if(torrents.length===0&&batchTorrents.length===0){
                 for(const q of queries){
-                    if(q.toUpperCase().includes(seTag)||q.toUpperCase().includes(epTag))continue;
+                    const qu=q.toUpperCase();
+                    if(qu.includes(seTag)||qu.includes(epTag)||/seri[ea]/i.test(q))continue;
                     const found=await searchSKT(q);
                     if(found.length>0){
-                        const ep=found.filter(t=>t.name.toUpperCase().includes(epTag));
-                        const se=found.filter(t=>t.name.toUpperCase().includes(seTag)&&!t.name.toUpperCase().includes(epTag));
-                        if(ep.length>0)torrents=ep;
-                        if(se.length>0)batchTorrents=se;
+                        const epF=found.filter(t=>matchesEpisode(t.name));
+                        const seF=found.filter(t=>matchesSeason(t.name)&&!matchesEpisode(t.name));
+                        if(epF.length>0)torrents=epF;
+                        if(seF.length>0)batchTorrents=seF;
                         if(torrents.length>0||batchTorrents.length>0)break;
                     }
                 }
@@ -231,7 +252,11 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             }
             const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
             const flagStr=flags.length?` ${flags.join("/")}`:"";
-            const clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+            let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+            // Odstraň kategorii ze začátku názvu (např. "Filmy Kreslené Zootropolis..." → "Zootropolis...")
+            if(t.cat&&clean.startsWith(t.cat)){
+                clean=clean.slice(t.cat.length).trim();
+            }
             const se=season!==undefined?`/${season}/${episode}`:'';
             const proxyUrl=`${baseUrl}/${token}/play/${t.hash}${se}/video.mp4`;
             const batchLabel=isBatch?` 📦 ${epTag} Batch`:'';
