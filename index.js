@@ -1,5 +1,5 @@
-// SKTorrent + Real-Debrid Stremio Addon v2.1
-// Hash z odkazů na stránce - BEZ přihlášení na SKT
+// SKTorrent + Real-Debrid Stremio Addon v2.2
+// Hledání jen zobrazí nalezené torrenty. RD resolve až po kliknutí.
 const { decode } = require("entities");
 const axios = require("axios");
 const cheerio = require("cheerio");
@@ -94,7 +94,7 @@ async function searchSKT(query) {
     } catch (e) { console.error("[SKT]", e.message); return []; }
 }
 
-// ============ REAL-DEBRID ============
+// ============ REAL-DEBRID (voláno až při kliknutí) ============
 function rdH(t) { return { Authorization: `Bearer ${t}`, "Content-Type": "application/x-www-form-urlencoded" }; }
 
 async function rdAddMagnet(token, hash) {
@@ -133,16 +133,16 @@ async function rdVerify(token) {
     catch (e) { return null; }
 }
 
+// Resolve: hash → streaming URL (voláno až při kliknutí)
 async function resolveRD(token, hash, season, episode) {
+    console.log(`[RD] Resolving: ${hash}`);
     const tid = await rdAddMagnet(token, hash);
     if (!tid) return null;
 
     let info;
-    // 1. Čekej na správný status
     for (let i = 0; i < 15; i++) {
         info = await rdInfo(token, tid);
         if (!info) { await rdDelete(token, tid); return null; }
-
         if (info.status === "downloaded" && info.links?.length > 0) {
             const url = await rdUnrestrict(token, info.links[0]);
             if (url) { console.log("[RD] ✅ Cached"); return url; }
@@ -150,12 +150,11 @@ async function resolveRD(token, hash, season, episode) {
         }
         if (info.status === "waiting_files_selection") break;
         if (["magnet_error", "error", "virus", "dead"].includes(info.status)) {
-            console.error(`[RD] ❌ ${info.status}`); await rdDelete(token, tid); return null;
+            await rdDelete(token, tid); return null;
         }
         await new Promise(r => setTimeout(r, 1000));
     }
 
-    // 2. Vyber soubory
     if (info.status === "waiting_files_selection" && info.files?.length > 0) {
         const videos = info.files.filter(f => isVideo(f.path));
         let fid;
@@ -177,7 +176,6 @@ async function resolveRD(token, hash, season, episode) {
         await rdDelete(token, tid); return null;
     }
 
-    // 3. Čekej na stažení
     for (let i = 0; i < 30; i++) {
         info = await rdInfo(token, tid);
         if (!info) return null;
@@ -217,13 +215,14 @@ app.get("/:token/manifest.json", (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "*");
     res.setHeader("Content-Type", "application/json");
     res.json({
-        id: "org.stremio.sktorrent.rd", version: "2.1.0", name: "SKTorrent+RD",
+        id: "org.stremio.sktorrent.rd", version: "2.2.0", name: "SKTorrent+RD",
         description: "CZ/SK torrenty ze sktorrent.eu s Real-Debrid",
         types: ["movie", "series"], catalogs: [], resources: ["stream"],
         idPrefixes: ["tt"], behaviorHints: { configurable: true, configurationRequired: false }
     });
 });
 
+// ============ STREAM HANDLER - jen zobrazí nalezené torrenty, nic nestahuje ============
 app.get("/:token/stream/:type/:id.json", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
@@ -248,6 +247,11 @@ app.get("/:token/stream/:type/:id.json", async (req, res) => {
         const streams = [];
         const seen = new Set();
 
+        // Sestavení base URL pro resolve endpoint
+        const proto = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.headers['x-forwarded-host'] || req.get('host');
+        const baseUrl = `${proto}://${host}`;
+
         for (const t of torrents) {
             if (isMultiSeason(t.name) || seen.has(t.hash)) continue;
             seen.add(t.hash);
@@ -256,41 +260,56 @@ app.get("/:token/stream/:type/:id.json", async (req, res) => {
             const flagStr = flags.length ? ` ${flags.join("/")}` : "";
             const clean = t.name.replace(/^Stiahni si\s*/i, "").trim();
 
-            const url = await resolveRD(token, t.hash, season, episode);
+            // Každý stream odkazuje na /resolve endpoint - RD se zavolá až po kliknutí
+            const resolveUrl = `${baseUrl}/${token}/resolve/${t.hash}` +
+                (season !== undefined ? `/${season}/${episode}` : '');
 
-            if (url) {
-                streams.push({
-                    name: "SKT+RD",
-                    description: `${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid | ${t.cat}`,
-                    url: url,
-                    behaviorHints: { bingeGroup: `skt-rd-${t.hash.slice(0,8)}`, notWebReady: false }
-                });
-            } else {
-                streams.push({
-                    name: "SKTorrent",
-                    description: `${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n🧲 Magnet | ${t.cat}`,
-                    infoHash: t.hash,
-                    sources: [
-                        "tracker:udp://tracker.opentrackr.org:1337/announce",
-                        "tracker:udp://tracker.openbittorrent.com:80/announce",
-                        "tracker:udp://ipv4announce.sktorrent.eu:6969/announce"
-                    ]
-                });
-            }
-            if (streams.length >= 8) break;
+            streams.push({
+                name: "SKT+RD",
+                description: `${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid | ${t.cat}`,
+                url: resolveUrl,
+                behaviorHints: {
+                    bingeGroup: `skt-rd-${t.hash.slice(0,8)}`,
+                    notWebReady: true,
+                    proxyHeaders: { request: { "User-Agent": "Stremio" } }
+                }
+            });
+
+            if (streams.length >= 15) break;
         }
 
-        console.log(`✅ ${streams.length} streams`);
+        console.log(`✅ ${streams.length} streams (bez RD resolve)`);
         return res.json({ streams });
     } catch (e) { console.error("Error:", e.message); return res.json({ streams: [] }); }
 });
 
+// ============ RESOLVE ENDPOINT - RD stahuje až tady (po kliknutí) ============
+app.get("/:token/resolve/:hash/:season?/:episode?", async (req, res) => {
+    const { token, hash, season, episode } = req.params;
+    const s = season ? parseInt(season) : undefined;
+    const e = episode ? parseInt(episode) : undefined;
+
+    console.log(`\n🔄 Resolve klik: ${hash} S${s ?? '-'}E${e ?? '-'}`);
+
+    const streamUrl = await resolveRD(token, hash, s, e);
+
+    if (streamUrl) {
+        console.log(`[Resolve] ✅ Redirect → ${streamUrl.slice(0, 80)}...`);
+        return res.redirect(302, streamUrl);
+    } else {
+        console.error("[Resolve] ❌ Nepodařilo se resolvovat");
+        return res.status(502).send("Failed to resolve torrent via Real-Debrid");
+    }
+});
+
+// ============ VERIFY ============
 app.get("/api/verify/:token", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     const u = await rdVerify(req.params.token);
     res.json(u ? { success: true, username: u.username, type: u.type, expiration: u.expiration } : { success: false });
 });
 
+// ============ HTML ============
 function html() {
     return `<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SKTorrent+RD | Stremio</title>
@@ -307,7 +326,7 @@ function html() {
 <div class="st" id="s"></div>
 <button class="btn bi" id="ib" onclick="install()">📦 Nainstalovat do Stremio</button>
 <div class="url" id="u"></div>
-<div class="ft"><div>CZ/SK torrenty</div><div>Real-Debrid stream</div><div>Filmy & seriály</div><div>Bez registrace SKT</div><div>Auto výběr epizod</div><div>Magnet fallback</div></div>
+<div class="ft"><div>CZ/SK torrenty</div><div>Real-Debrid stream</div><div>Filmy & seriály</div><div>Bez registrace SKT</div><div>Auto výběr epizod</div><div>Rychlé zobrazení</div></div>
 </div>
 <script>
 const B=location.origin;
