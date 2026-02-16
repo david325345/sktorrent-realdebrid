@@ -149,6 +149,22 @@ async function rdUnrestrict(token,link){try{return(await axios.post(`${RD_API}/u
 async function rdDelete(token,id){try{await axios.delete(`${RD_API}/torrents/delete/${id}`,{headers:{Authorization:`Bearer ${token}`},timeout:5000});}catch(e){}}
 async function rdVerify(token){try{return(await axios.get(`${RD_API}/user`,{headers:{Authorization:`Bearer ${token}`},timeout:5000})).data;}catch(e){return null;}}
 
+// RD Instant Availability - zjistí které hashe jsou v cache bez stahování
+async function rdInstantAvail(token,hashes){
+    if(!hashes.length)return new Set();
+    try{
+        const url=`${RD_API}/torrents/instantAvailability/${hashes.join('/')}`;
+        const r=await axios.get(url,{headers:{Authorization:`Bearer ${token}`},timeout:8000});
+        const cached=new Set();
+        for(const[hash,data] of Object.entries(r.data||{})){
+            // Pokud má 'rd' pole s aspoň jedním záznamem → je v cache
+            if(data?.rd?.length>0)cached.add(hash.toLowerCase());
+        }
+        console.log(`[RD] ⚡ Cache: ${cached.size}/${hashes.length}`);
+        return cached;
+    }catch(e){console.error("[RD] instantAvail:",e.response?.data?.error||e.message);return new Set();}
+}
+
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
     if(cached&&Date.now()-cached.ts<CACHE_TTL){console.log("[RD] ✅ Cache hit");return cached.url;}
@@ -294,10 +310,26 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                         const batch=found.filter(t=>isBatchSeason(t.name));
                         if(ep.length>0)torrents=ep;
                         if(batch.length>0)batchTorrents=batch;
-                        // Pokud nic nemá sezónu/epizodu, považuj za batch celé série
+                        // Pokud nic nemá sezónu/epizodu — filtruj: nesmí obsahovat JINOU sezónu
                         if(!torrents.length&&!batchTorrents.length){
-                            batchTorrents=found.filter(t=>!hasAnyEpisode(t.name));
-                            if(batchTorrents.length>0)console.log(`[SKT] 📦 ${batchTorrents.length}x bez sezóny → batch`);
+                            const noSeason=found.filter(t=>{
+                                if(hasAnyEpisode(t.name))return false;
+                                const up=t.name.toUpperCase();
+                                // Pokud torrent obsahuje S[číslo], musí to být naše sezóna
+                                const sMatch=up.match(/S(\d{2})/g);
+                                if(sMatch){
+                                    const hasMy=sMatch.some(s=>s===seTag);
+                                    if(!hasMy)return false; // Obsahuje jinou sezónu (S38) → vyřadit
+                                }
+                                // Pokud obsahuje "[číslo].serie/seria", musí být naše
+                                const czMatch=t.name.match(/(\d+)\s*\.?\s*seri[ea]/i);
+                                if(czMatch&&czMatch[1]!==sn)return false;
+                                return true;
+                            });
+                            if(noSeason.length>0){
+                                batchTorrents=noSeason;
+                                console.log(`[SKT] 📦 ${noSeason.length}x batch (z ${found.length} nalezených)`);
+                            }
                         }
                     }
                     await delay(300);
@@ -316,6 +348,11 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         }
 
         if(!torrents.length&&!batchTorrents.length)return res.json({streams:[]});
+        
+        // RD Instant Availability check
+        const allHashes=[...new Set([...torrents,...batchTorrents].map(t=>t.hash))];
+        const cachedHashes=await rdInstantAvail(rdToken,allHashes);
+        
         const proto=req.headers['x-forwarded-proto']||req.protocol;
         const host=req.headers['x-forwarded-host']||req.get('host');
         const baseUrl=`${proto}://${host}`;
@@ -330,15 +367,22 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             const se=season!==undefined?`/${season}/${episode}`:'';
             const proxyUrl=`${baseUrl}/${req.params.token}/play/${t.hash}${se}/video.mp4`;
             const batchLabel=isBatch?` 📦 ${epTag} Batch`:'';
+            const isCached=cachedHashes.has(t.hash);
+            const cacheIcon=isCached?'⚡ Instant':'🕐 Stahování';
             const cat=t.cat||'SKT';
             streams.push({
                 name:`SKT+RD\n${cat}`,
-                description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`,
+                description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n${cacheIcon}`,
                 url:proxyUrl,
                 behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}
             });
         };
 
+        // Seřaď cached torrenty nahoru
+        const sortByCache=(a,b)=>(cachedHashes.has(b.hash)?1:0)-(cachedHashes.has(a.hash)?1:0);
+        torrents.sort(sortByCache);
+        batchTorrents.sort(sortByCache);
+        
         for(const t of torrents){addStream(t,false);if(streams.length>=12)break;}
         for(const t of batchTorrents){addStream(t,true);if(streams.length>=15)break;}
 
