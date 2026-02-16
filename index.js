@@ -84,7 +84,10 @@ async function getTitle(imdbId, tmdbKey){
 }
 
 // ============ SKTORRENT ============
+let sktRateLimited=false;
+
 async function searchSKT(query){
+    if(sktRateLimited){console.log(`[SKT] ⏸️ Rate limited, skip "${query}"`);return[];}
     console.log(`[SKT] 🔎 "${query}"`);
     try{
         const hdrs={"User-Agent":"Mozilla/5.0"};
@@ -120,8 +123,18 @@ async function searchSKT(query){
             });
         }
         console.log(`[SKT] Nalezeno: ${results.length}`);return results;
-    }catch(e){console.error("[SKT]",e.message);return[];}
+    }catch(e){
+        if(e.response?.status===403){
+            console.error("[SKT] ⛔ 403 Rate limit - pausing");
+            sktRateLimited=true;
+            setTimeout(()=>{sktRateLimited=false;},60000); // Reset po 60s
+        }else{console.error("[SKT]",e.message);}
+        return[];
+    }
 }
+
+// Delay helper
+const delay=(ms)=>new Promise(r=>setTimeout(r,ms));
 
 // ============ REAL-DEBRID ============
 function rdH(t){return{Authorization:`Bearer ${t}`,"Content-Type":"application/x-www-form-urlencoded"};}
@@ -167,36 +180,31 @@ async function resolveRD(token,hash,season,episode){
 }
 
 // ============ QUERIES ============
-function buildQueries(titles,type,season,episode){
-    const q=[];
-    // Všechny názvy: CZ, SK, EN, original
-    const allNames=[...new Set((titles.all||[titles.title,titles.original]).filter(Boolean))];
-    const bases=allNames.map(t=>t.replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim()).filter(Boolean);
-
-    for(const base of bases){
-        const nd=removeDiacritics(base),sh=shortenTitle(nd);
-        const variants=[...new Set([base,nd,sh].flatMap(b=>[b,b.replace(/[':]/g,'')]).filter(Boolean))];
-
-        if(type==='series'&&season&&episode){
-            const ep=`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`;
-            const se=`S${String(season).padStart(2,'0')}`;
-            const sn=String(season);
-            for(const v of variants){if(!q.includes(v+' '+ep))q.push(v+' '+ep);}
-            for(const v of variants){if(!q.includes(v+' '+se))q.push(v+' '+se);}
-            for(const v of variants){
-                const a=v+' '+sn+'.serie';if(!q.includes(a))q.push(a);
-                const b=v+' '+sn+'. serie';if(!q.includes(b))q.push(b);
-                const c=v+' '+sn+'.seria';if(!q.includes(c))q.push(c);
-                const d=v+' '+sn+'. seria';if(!q.includes(d))q.push(d);
-                const e2=v+' serie '+sn;if(!q.includes(e2))q.push(e2);
-                const f=v+' seria '+sn;if(!q.includes(f))q.push(f);
-            }
-            for(const v of variants){if(!q.includes(v))q.push(v);}
-        } else {
-            for(const v of variants){if(!q.includes(v))q.push(v);}
-        }
+// Generuje minimální sadu queries: EN název, CZ název, zkrácené varianty
+function buildSearchNames(titles){
+    const names=[];
+    const add=(s)=>{s=s?.trim();if(s&&s.length>=2&&!names.includes(s))names.push(s);};
+    
+    // EN název (primární)
+    const en=(titles.en||titles.title||'').replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim();
+    if(en){
+        add(en);
+        add(removeDiacritics(en));
+        // Bez subtitle
+        if(en.includes(':'))add(en.split(':')[0].trim());
+        if(en.includes(' - '))add(en.split(' - ')[0].trim());
     }
-    return q;
+    
+    // CZ název (sekundární) - jen pokud se liší od EN
+    const cz=(titles.cz||'').replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim();
+    if(cz&&cz!==en){
+        add(cz);
+        add(removeDiacritics(cz));
+        if(cz.includes(':'))add(cz.split(':')[0].trim());
+        if(cz.includes(':'))add(removeDiacritics(cz.split(':')[0].trim()));
+    }
+    
+    return names;
 }
 
 // ============ EXPRESS ============
@@ -219,7 +227,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
     try{
         const titles=await getTitle(imdbId,tmdbKey);if(!titles)return res.json({streams:[]});
-        const queries=buildQueries(titles,type,season,episode);
+        const names=buildSearchNames(titles);
         let torrents=[];
         let batchTorrents=[];
         const epTag=season!==undefined?`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`:'';
@@ -227,59 +235,75 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const sn=season!==undefined?String(season):'';
 
         const matchesExactEpisode=(name)=>name.toUpperCase().includes(epTag);
-        const hasAnyEpisode=(name)=>{
-            // Obsahuje S05E[číslo] — jakoukoliv epizodu v dané sezóně
-            const pat=new RegExp(seTag+'E\\d{2}','i');
-            return pat.test(name);
-        };
-        const matchesWrongEpisode=(name)=>hasAnyEpisode(name)&&!matchesExactEpisode(name);
+        const hasAnyEpisode=(name)=>new RegExp(seTag+'E\\d{2}','i').test(name);
         const isBatchSeason=(name)=>{
-            // Obsahuje sezónu ale NEMÁ žádné Exx — celá sezóna
             const up=name.toUpperCase();
-            const hasSeason=up.includes(seTag)||(new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i')).test(name);
-            if(!hasSeason)return false;
-            return !hasAnyEpisode(name);
+            const hasSe=up.includes(seTag)||(new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i')).test(name);
+            return hasSe&&!hasAnyEpisode(name);
         };
 
-        if(type==='series'&&season!==undefined){
-            // 1. Hledej přesnou epizodu (S05E05)
-            for(const q of queries){
-                if(!q.toUpperCase().includes(epTag))continue;
-                const found=await searchSKT(q);
-                if(found.length>0){
-                    // Ber jen přesnou epizodu nebo batch (celou sezónu), ne jiné epizody
-                    const filtered=found.filter(t=>matchesExactEpisode(t.name)||isBatchSeason(t.name));
-                    if(filtered.length>0){torrents=filtered;break;}
-                }
-            }
-            // 2. Hledej batch (S05 bez epizody)
-            for(const q of queries){
-                const qu=q.toUpperCase();
-                if(qu.includes(epTag))continue;
-                if(!qu.includes(seTag)&&!/\bseri[ea]\b/i.test(q)&&!new RegExp(`\\b${sn}\\b`).test(q))continue;
-                const found=await searchSKT(q);
-                if(found.length>0){
-                    const filtered=found.filter(t=>isBatchSeason(t.name));
-                    if(filtered.length>0){batchTorrents=filtered;break;}
-                }
-            }
-            // 3. Fallback: holý název
-            if(torrents.length===0&&batchTorrents.length===0){
-                for(const q of queries){
-                    const qu=q.toUpperCase();
-                    if(qu.includes(seTag)||qu.includes(epTag)||/seri[ea]/i.test(q))continue;
-                    const found=await searchSKT(q);
+        // Rok z TMDB - pro filtrování (jen filmy)
+        const omdbYear=(type==='movie'&&titles.year)?titles.year.replace(/[–-].*$/,'').trim():"";
+        
+        // Filtr roku - vrátí jen torrenty se správným rokem (nebo bez roku)
+        const filterYear=(list)=>{
+            if(!omdbYear)return list;
+            return list.filter(t=>{
+                const yearMatches=t.name.match(/\b(19|20)\d{2}\b/g);
+                if(!yearMatches||yearMatches.length===0)return true; // Nemá rok → projde
+                const ok=yearMatches.some(y=>y===omdbYear);
+                if(!ok)console.log(`[SKT] ⏭️ Rok nesedí: "${t.name}" (hledám ${omdbYear})`);
+                return ok;
+            });
+        };
+
+        // Hledej postupně každý název
+        async function searchWithName(name){
+            if(sktRateLimited)return;
+            if(type==='series'&&season!==undefined){
+                if(!torrents.length){
+                    const found=filterYear(await searchSKT(name+' '+epTag));
                     if(found.length>0){
-                        const epF=found.filter(t=>matchesExactEpisode(t.name));
-                        const seF=found.filter(t=>isBatchSeason(t.name));
-                        if(epF.length>0)torrents=epF;
-                        if(seF.length>0)batchTorrents=seF;
-                        if(torrents.length>0||batchTorrents.length>0)break;
+                        const ep=found.filter(t=>matchesExactEpisode(t.name));
+                        const batch=found.filter(t=>isBatchSeason(t.name));
+                        if(ep.length>0)torrents=ep;
+                        if(batch.length>0&&!batchTorrents.length)batchTorrents=batch;
                     }
+                    await delay(300);
+                }
+                if(!batchTorrents.length&&!sktRateLimited){
+                    const found=filterYear(await searchSKT(name+' '+seTag));
+                    if(found.length>0){
+                        const batch=found.filter(t=>isBatchSeason(t.name));
+                        if(batch.length>0)batchTorrents=batch;
+                        if(!torrents.length){
+                            const ep=found.filter(t=>matchesExactEpisode(t.name));
+                            if(ep.length>0)torrents=ep;
+                        }
+                    }
+                    await delay(300);
+                }
+                if(!torrents.length&&!batchTorrents.length&&!sktRateLimited){
+                    const found=filterYear(await searchSKT(name));
+                    if(found.length>0){
+                        const ep=found.filter(t=>matchesExactEpisode(t.name));
+                        const batch=found.filter(t=>isBatchSeason(t.name));
+                        if(ep.length>0)torrents=ep;
+                        if(batch.length>0)batchTorrents=batch;
+                    }
+                    await delay(300);
+                }
+            } else {
+                if(!torrents.length&&!sktRateLimited){
+                    torrents=filterYear(await searchSKT(name));
+                    await delay(300);
                 }
             }
-        } else {
-            for(const q of queries){torrents=await searchSKT(q);if(torrents.length>0)break;}
+        }
+
+        for(const name of names){
+            await searchWithName(name);
+            if(torrents.length>=3)break;
         }
 
         if(!torrents.length&&!batchTorrents.length)return res.json({streams:[]});
@@ -287,16 +311,9 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const host=req.headers['x-forwarded-host']||req.get('host');
         const baseUrl=`${proto}://${host}`;
         const streams=[];const seen=new Set();
-        const omdbYear=(type==='movie'&&titles.year)?titles.year.replace(/[–-].*$/,'').trim():"";
 
         const addStream=(t,isBatch)=>{
             if(isMultiSeason(t.name)||seen.has(t.hash))return;seen.add(t.hash);
-            if(omdbYear){
-                const yearMatches=t.name.match(/\b(19|20)\d{2}\b/g);
-                if(yearMatches&&yearMatches.length>0&&!yearMatches.some(y=>y===omdbYear)){
-                    console.log(`[SKT] ⏭️ Rok nesedí: "${t.name}" (hledám ${omdbYear})`);return;
-                }
-            }
             const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
             const flagStr=flags.length?` ${flags.join("/")}`:"";
             let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
