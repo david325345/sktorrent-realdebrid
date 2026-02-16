@@ -35,31 +35,26 @@ async function searchSKT(query){
         const r=await axios.get(SEARCH_URL,{params:{search:query,category:0,active:0},headers:hdrs,timeout:10000});
         const $=cheerio.load(r.data);const results=[];
 
-        // Metoda 1: obrázková verze torrents_v2 - hledej všechny details.php linky
-        $('a[href*="details.php"]').each((i,el)=>{
-            const href=$(el).attr("href")||"";
+        // Metoda 1: obrázková verze torrents_v2 - jen odkazy s posterem (img)
+        $('a[href*="details.php"] img').each((i,img)=>{
+            const el=$(img).closest('a');
+            const href=el.attr("href")||"";
             const m=href.match(/id=([a-fA-F0-9]{40})/);
             if(!m)return;
             const hash=m[1].toLowerCase();
             if(results.find(r=>r.hash===hash))return;
 
-            // Název: title atribut (tooltip) > text obsah > name z URL
-            let name=$(el).attr("title")||"";
-            if(!name||name.length<3) name=$(el).text().trim();
-            if(!name||name.length<3){
-                const nameM=href.match(/name=([^&]+)/);
-                if(nameM) name=decodeURIComponent(nameM[1]).replace(/-/g,' ');
-            }
+            // Název z title atributu odkazu (tooltip)
+            const name=el.attr("title")||"";
             if(!name||name.length<3)return;
 
             // Metadata z okolního TD
-            const td=$(el).closest("td");
+            const td=el.closest("td");
             const block=td.text().replace(/\s+/g,' ').trim();
             const cat=td.find("b").first().text().trim();
             const szM=block.match(/Velkost\s([^|]+)/i);
             const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
 
-            // Žádný filtr kategorií - zobrazíme vše co se najde
             results.push({name,hash,size:szM?szM[1].trim():"?",seeds:sdM?parseInt(sdM[1]):0,cat});
         });
 
