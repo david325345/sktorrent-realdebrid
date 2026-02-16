@@ -226,41 +226,52 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const seTag=season!==undefined?`S${String(season).padStart(2,'0')}`:'';
         const sn=season!==undefined?String(season):'';
 
-        const matchesSeason=(name)=>{
-            const up=name.toUpperCase();
-            if(up.includes(seTag))return true;
-            const czPat=new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i');
-            return czPat.test(name);
+        const matchesExactEpisode=(name)=>name.toUpperCase().includes(epTag);
+        const hasAnyEpisode=(name)=>{
+            // Obsahuje S05E[číslo] — jakoukoliv epizodu v dané sezóně
+            const pat=new RegExp(seTag+'E\\d{2}','i');
+            return pat.test(name);
         };
-        const matchesEpisode=(name)=>name.toUpperCase().includes(epTag);
+        const matchesWrongEpisode=(name)=>hasAnyEpisode(name)&&!matchesExactEpisode(name);
+        const isBatchSeason=(name)=>{
+            // Obsahuje sezónu ale NEMÁ žádné Exx — celá sezóna
+            const up=name.toUpperCase();
+            const hasSeason=up.includes(seTag)||(new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i')).test(name);
+            if(!hasSeason)return false;
+            return !hasAnyEpisode(name);
+        };
 
         if(type==='series'&&season!==undefined){
+            // 1. Hledej přesnou epizodu (S05E05)
             for(const q of queries){
                 if(!q.toUpperCase().includes(epTag))continue;
                 const found=await searchSKT(q);
                 if(found.length>0){
-                    const filtered=found.filter(t=>matchesEpisode(t.name)||matchesSeason(t.name));
+                    // Ber jen přesnou epizodu nebo batch (celou sezónu), ne jiné epizody
+                    const filtered=found.filter(t=>matchesExactEpisode(t.name)||isBatchSeason(t.name));
                     if(filtered.length>0){torrents=filtered;break;}
                 }
             }
+            // 2. Hledej batch (S05 bez epizody)
             for(const q of queries){
                 const qu=q.toUpperCase();
                 if(qu.includes(epTag))continue;
                 if(!qu.includes(seTag)&&!/\bseri[ea]\b/i.test(q)&&!new RegExp(`\\b${sn}\\b`).test(q))continue;
                 const found=await searchSKT(q);
                 if(found.length>0){
-                    const filtered=found.filter(t=>matchesSeason(t.name)&&!matchesEpisode(t.name));
+                    const filtered=found.filter(t=>isBatchSeason(t.name));
                     if(filtered.length>0){batchTorrents=filtered;break;}
                 }
             }
+            // 3. Fallback: holý název
             if(torrents.length===0&&batchTorrents.length===0){
                 for(const q of queries){
                     const qu=q.toUpperCase();
                     if(qu.includes(seTag)||qu.includes(epTag)||/seri[ea]/i.test(q))continue;
                     const found=await searchSKT(q);
                     if(found.length>0){
-                        const epF=found.filter(t=>matchesEpisode(t.name));
-                        const seF=found.filter(t=>matchesSeason(t.name)&&!matchesEpisode(t.name));
+                        const epF=found.filter(t=>matchesExactEpisode(t.name));
+                        const seF=found.filter(t=>isBatchSeason(t.name));
                         if(epF.length>0)torrents=epF;
                         if(seF.length>0)batchTorrents=seF;
                         if(torrents.length>0||batchTorrents.length>0)break;
