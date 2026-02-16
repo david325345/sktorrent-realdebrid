@@ -23,8 +23,8 @@ const resolveCache=new Map();
 const CACHE_TTL=3600000;
 
 async function getTitle(imdbId){
-    try{const r=await axios.get(`https://www.omdbapi.com/?i=${imdbId}&apikey=91fa16b4`,{timeout:5000});if(r.data?.Title){console.log(`[OMDb] "${r.data.Title}"`);return{title:r.data.Title,original:r.data.Title};}}catch(e){}
-    try{const r=await axios.get(`https://www.imdb.com/title/${imdbId}/`,{headers:{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},timeout:8000});const $=cheerio.load(r.data);const title=decode($('title').text().split(' - ')[0].trim());let orig=title;const ld=$('script[type="application/ld+json"]').html();if(ld){try{const j=JSON.parse(ld);if(j?.name)orig=decode(j.name.trim());}catch(e){}}return{title,original:orig};}catch(e){console.error("[IMDb]",e.message);return null;}
+    try{const r=await axios.get(`https://www.omdbapi.com/?i=${imdbId}&apikey=91fa16b4`,{timeout:5000});if(r.data?.Title){console.log(`[OMDb] "${r.data.Title}" (${r.data.Year})`);return{title:r.data.Title,original:r.data.Title,year:r.data.Year||""};}}catch(e){}
+    try{const r=await axios.get(`https://www.imdb.com/title/${imdbId}/`,{headers:{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},timeout:8000});const $=cheerio.load(r.data);const title=decode($('title').text().split(' - ')[0].trim());let orig=title;const ld=$('script[type="application/ld+json"]').html();if(ld){try{const j=JSON.parse(ld);if(j?.name)orig=decode(j.name.trim());}catch(e){}}return{title,original:orig,year:""};}catch(e){console.error("[IMDb]",e.message);return null;}
 }
 
 async function searchSKT(query){
@@ -157,8 +157,20 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const host=req.headers['x-forwarded-host']||req.get('host');
         const baseUrl=`${proto}://${host}`;
         const streams=[];const seen=new Set();
+        // Rok z OMDb pro filtrování (např. "2005" nebo "2020–2023" pro seriály)
+        const omdbYear=titles.year?titles.year.replace(/[–-].*$/,'').trim():"";
         for(const t of torrents){
             if(isMultiSeason(t.name)||seen.has(t.hash))continue;seen.add(t.hash);
+
+            // Kontrola roku: pokud torrent obsahuje 4ciferný rok a OMDb taky, musí se shodovat
+            if(omdbYear){
+                const yearMatches=t.name.match(/\b(19|20)\d{2}\b/g);
+                if(yearMatches&&yearMatches.length>0){
+                    const hasMatch=yearMatches.some(y=>y===omdbYear);
+                    if(!hasMatch){console.log(`[SKT] ⏭️ Rok nesedí: "${t.name}" (hledám ${omdbYear})`);continue;}
+                }
+            }
+
             const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
             const flagStr=flags.length?` ${flags.join("/")}`:"";
             const clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
