@@ -195,9 +195,10 @@ function buildSearchNames(titles){
         if(en.includes(' - '))add(en.split(' - ')[0].trim());
     }
     
-    // CZ název (sekundární) - jen pokud se liší od EN
+    // CZ název (sekundární) - jen pokud se liší od EN a je v latince
     const cz=(titles.cz||'').replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim();
-    if(cz&&cz!==en){
+    const isLatin=(s)=>/[a-zA-Z]/.test(s); // Musí obsahovat aspoň jedno latinské písmeno
+    if(cz&&cz!==en&&isLatin(cz)){
         add(cz);
         add(removeDiacritics(cz));
         if(cz.includes(':'))add(cz.split(':')[0].trim());
@@ -261,6 +262,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         async function searchWithName(name){
             if(sktRateLimited)return;
             if(type==='series'&&season!==undefined){
+                // 1. Přesná epizoda
                 if(!torrents.length){
                     const found=filterYear(await searchSKT(name+' '+epTag));
                     if(found.length>0){
@@ -271,6 +273,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                     }
                     await delay(300);
                 }
+                // 2. Sezóna batch
                 if(!batchTorrents.length&&!sktRateLimited){
                     const found=filterYear(await searchSKT(name+' '+seTag));
                     if(found.length>0){
@@ -283,6 +286,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                     }
                     await delay(300);
                 }
+                // 3. Holý název - pokud najde ale nic nemá S01/epizodu, ber jako batch
                 if(!torrents.length&&!batchTorrents.length&&!sktRateLimited){
                     const found=filterYear(await searchSKT(name));
                     if(found.length>0){
@@ -290,6 +294,11 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                         const batch=found.filter(t=>isBatchSeason(t.name));
                         if(ep.length>0)torrents=ep;
                         if(batch.length>0)batchTorrents=batch;
+                        // Pokud nic nemá sezónu/epizodu, považuj za batch celé série
+                        if(!torrents.length&&!batchTorrents.length){
+                            batchTorrents=found.filter(t=>!hasAnyEpisode(t.name));
+                            if(batchTorrents.length>0)console.log(`[SKT] 📦 ${batchTorrents.length}x bez sezóny → batch`);
+                        }
                     }
                     await delay(300);
                 }
