@@ -51,11 +51,15 @@ async function searchSKT(query){
             // Metadata z okolního TD
             const td=el.closest("td");
             const block=td.text().replace(/\s+/g,' ').trim();
-            const cat=td.find("b").first().text().trim();
+
+            // Skutečný torrent musí mít "Velkost" (velikost) v bloku - komentáře to nemají
             const szM=block.match(/Velkost\s([^|]+)/i);
+            if(!szM)return;
+
+            const cat=td.find("b").first().text().trim();
             const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
 
-            results.push({name,hash,size:szM?szM[1].trim():"?",seeds:sdM?parseInt(sdM[1]):0,cat});
+            results.push({name,hash,size:szM[1].trim(),seeds:sdM?parseInt(sdM[1]):0,cat});
         });
 
         // Metoda 2: fallback tabulková verze (torrents.php)
