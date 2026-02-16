@@ -9,6 +9,8 @@ const BASE_URL = "https://sktorrent.eu";
 const SEARCH_URL = `${BASE_URL}/torrent/torrents_v2.php`;
 const RD_API = "https://api.real-debrid.com/rest/1.0";
 const PORT = process.env.PORT || 7000;
+const SKT_UID = process.env.SKT_UID || "";
+const SKT_PASS = process.env.SKT_PASS || "";
 
 const langToFlag = { CZ:"🇨🇿",SK:"🇸🇰",EN:"🇬🇧",US:"🇺🇸",DE:"🇩🇪",FR:"🇫🇷",IT:"🇮🇹",ES:"🇪🇸",RU:"🇷🇺",PL:"🇵🇱",HU:"🇭🇺",JP:"🇯🇵" };
 const VIDEO_EXT = [".mkv",".mp4",".avi",".mov",".wmv",".flv",".webm",".ts",".m4v"];
@@ -28,7 +30,9 @@ async function getTitle(imdbId){
 async function searchSKT(query){
     console.log(`[SKT] 🔎 "${query}"`);
     try{
-        const r=await axios.get(SEARCH_URL,{params:{search:query,category:0,active:0},headers:{"User-Agent":"Mozilla/5.0"},timeout:10000});
+        const hdrs={"User-Agent":"Mozilla/5.0"};
+        if(SKT_UID&&SKT_PASS) hdrs.Cookie=`uid=${SKT_UID}; pass=${SKT_PASS}`;
+        const r=await axios.get(SEARCH_URL,{params:{search:query,category:0,active:0},headers:hdrs,timeout:10000});
         const $=cheerio.load(r.data);const results=[];
 
         // Metoda 1: obrázková verze torrents_v2 - hledej všechny details.php linky
