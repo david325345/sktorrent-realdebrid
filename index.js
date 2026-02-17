@@ -148,7 +148,7 @@ async function rdDelete(token,id){try{await axios.delete(`${RD_API}/torrents/del
 async function rdVerify(token){try{return(await axios.get(`${RD_API}/user`,{headers:{Authorization:`Bearer ${token}`},timeout:5000})).data;}catch(e){return null;}}
 
 // Downloading video URL - nahradit vlastní URL po uploadu na GitHub
-const DOWNLOADING_VIDEO='https://raw.githubusercontent.com/user/repo/main/downloading.mp4';
+const DOWNLOADING_VIDEO='https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/downloading.mp4';
 
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
@@ -385,7 +385,14 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     const streamUrl=await resolveRD(rdToken,hash,season,episode);
     if(!streamUrl){
         console.log("[Play] 🕐 Torrent se stahuje → info video");
-        return res.redirect(302,DOWNLOADING_VIDEO);
+        // Servíruj video přímo z URL (Stremio nemusí následovat redirect na GitHub)
+        try{
+            const vid=await axios.get(DOWNLOADING_VIDEO,{responseType:'stream',timeout:10000});
+            res.setHeader('Content-Type','video/mp4');
+            return vid.data.pipe(res);
+        }catch(e){
+            return res.redirect(302,DOWNLOADING_VIDEO);
+        }
     }
     console.log(`[Play] ✅ Redirect → ${streamUrl.slice(0,80)}...`);
     return res.redirect(302,streamUrl);
@@ -403,7 +410,7 @@ app.post("/api/skt-login",express.json(),async(req,res)=>{
     const{username,password}=req.body||{};
     if(!username||!password)return res.json({success:false,error:"Zadej jméno a heslo"});
     try{
-        const r=await axios.post(`${BASE_URL}/torrent/takelogin.php`,
+        const r=await axios.post(`${BASE_URL}/takelogin.php`,
             `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
             {headers:{"Content-Type":"application/x-www-form-urlencoded","User-Agent":"Mozilla/5.0"},
              maxRedirects:0,validateStatus:s=>s>=200&&s<400,timeout:10000});
