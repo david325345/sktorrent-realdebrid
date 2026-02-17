@@ -196,32 +196,29 @@ async function resolveRD(token,hash,season,episode){
 }
 
 // ============ QUERIES ============
-// Generuje minimální sadu queries: EN název, CZ název, zkrácené varianty
+// Vrací { en: [...], cz: [...] } — oddělené EN a CZ názvy
 function buildSearchNames(titles){
-    const names=[];
-    const add=(s)=>{s=s?.trim();if(s&&s.length>=2&&!names.includes(s))names.push(s);};
+    const enNames=[], czNames=[];
+    const addTo=(arr,s)=>{s=s?.trim();if(s&&s.length>=2&&!arr.includes(s))arr.push(s);};
     
-    // EN název (primární)
     const en=(titles.en||titles.title||'').replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim();
     if(en){
-        add(en);
-        add(removeDiacritics(en));
-        // Bez subtitle
-        if(en.includes(':'))add(en.split(':')[0].trim());
-        if(en.includes(' - '))add(en.split(' - ')[0].trim());
+        addTo(enNames,en);
+        addTo(enNames,removeDiacritics(en));
+        if(en.includes(':'))addTo(enNames,en.split(':')[0].trim());
+        if(en.includes(' - '))addTo(enNames,en.split(' - ')[0].trim());
     }
     
-    // CZ název (sekundární) - jen pokud se liší od EN a je v latince
     const cz=(titles.cz||'').replace(/\(.*?\)/g,'').replace(/TV (Mini )?Series/gi,'').trim();
-    const isLatin=(s)=>/[a-zA-Z]/.test(s); // Musí obsahovat aspoň jedno latinské písmeno
+    const isLatin=(s)=>/[a-zA-Z]/.test(s);
     if(cz&&cz!==en&&isLatin(cz)){
-        add(cz);
-        add(removeDiacritics(cz));
-        if(cz.includes(':'))add(cz.split(':')[0].trim());
-        if(cz.includes(':'))add(removeDiacritics(cz.split(':')[0].trim()));
+        addTo(czNames,cz);
+        addTo(czNames,removeDiacritics(cz));
+        if(cz.includes(':'))addTo(czNames,cz.split(':')[0].trim());
+        if(cz.includes(':'))addTo(czNames,removeDiacritics(cz.split(':')[0].trim()));
     }
     
-    return names;
+    return {en:enNames, cz:czNames};
 }
 
 // ============ EXPRESS ============
@@ -244,7 +241,6 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
     try{
         const titles=await getTitle(imdbId,tmdbKey);if(!titles)return res.json({streams:[]});
-        const names=buildSearchNames(titles);
         let torrents=[];
         let batchTorrents=[];
         const epTag=season!==undefined?`S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`:'';
@@ -342,9 +338,20 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             }
         }
 
-        for(const name of names){
+        // Hledej EN názvy, jen pokud nic nenajde zkus CZ
+        const {en:enNames, cz:czNames}=buildSearchNames(titles);
+        
+        // 1. EN názvy
+        for(const name of enNames){
             await searchWithName(name);
-            if(torrents.length>=3)break;
+            if(torrents.length>0||batchTorrents.length>0)break;
+        }
+        // 2. CZ názvy — jen pokud EN nic nenašel
+        if(!torrents.length&&!batchTorrents.length){
+            for(const name of czNames){
+                await searchWithName(name);
+                if(torrents.length>0||batchTorrents.length>0)break;
+            }
         }
 
         if(!torrents.length&&!batchTorrents.length)return res.json({streams:[]});
