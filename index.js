@@ -9,8 +9,6 @@ const BASE_URL = "https://sktorrent.eu";
 const SEARCH_URL = `${BASE_URL}/torrent/torrents_v2.php`;
 const RD_API = "https://api.real-debrid.com/rest/1.0";
 const PORT = process.env.PORT || 7000;
-const SKT_UID = process.env.SKT_UID || "";
-const SKT_PASS = process.env.SKT_PASS || "";
 
 const langToFlag = { CZ:"🇨🇿",SK:"🇸🇰",EN:"🇬🇧",US:"🇺🇸",DE:"🇩🇪",FR:"🇫🇷",IT:"🇮🇹",ES:"🇪🇸",RU:"🇷🇺",PL:"🇵🇱",HU:"🇭🇺",JP:"🇯🇵" };
 const VIDEO_EXT = [".mkv",".mp4",".avi",".mov",".wmv",".flv",".webm",".ts",".m4v"];
@@ -22,10 +20,10 @@ function isVideo(f){return VIDEO_EXT.some(e=>f.toLowerCase().endsWith(e));}
 const resolveCache=new Map();
 const CACHE_TTL=3600000;
 
-// Token format: "RDTOKEN--TMDBKEY" nebo jen "RDTOKEN"
+// Token format: "RDTOKEN--TMDBKEY--SKTUID--SKTPASS" (TMDB, SKT volitelné)
 function parseToken(token){
     const parts=token.split("--");
-    return { rdToken: parts[0], tmdbKey: parts[1]||"" };
+    return { rdToken: parts[0]||"", tmdbKey: parts[1]||"", sktUid: parts[2]||"", sktPass: parts[3]||"" };
 }
 
 // ============ TMDB API ============
@@ -86,12 +84,12 @@ async function getTitle(imdbId, tmdbKey){
 // ============ SKTORRENT ============
 let sktRateLimited=false;
 
-async function searchSKT(query){
+async function searchSKT(query, sktUid, sktPass){
     if(sktRateLimited){console.log(`[SKT] ⏸️ Rate limited, skip "${query}"`);return[];}
     console.log(`[SKT] 🔎 "${query}"`);
     try{
         const hdrs={"User-Agent":"Mozilla/5.0"};
-        if(SKT_UID&&SKT_PASS) hdrs.Cookie=`uid=${SKT_UID}; pass=${SKT_PASS}`;
+        if(sktUid&&sktPass) hdrs.Cookie=`uid=${sktUid}; pass=${sktPass}`;
         const r=await axios.get(SEARCH_URL,{params:{search:query,category:0,active:0},headers:hdrs,timeout:10000});
         const $=cheerio.load(r.data);const results=[];
 
@@ -222,7 +220,7 @@ app.get("/:token/manifest.json",(req,res)=>{
 app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{type,id}=req.params;
-    const{rdToken,tmdbKey}=parseToken(req.params.token);
+    const{rdToken,tmdbKey,sktUid,sktPass}=parseToken(req.params.token);
     const[imdbId,sRaw,eRaw]=id.split(":");
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
@@ -238,8 +236,12 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const hasAnyEpisode=(name)=>new RegExp(seTag+'E\\d{2}','i').test(name);
         const isBatchSeason=(name)=>{
             const up=name.toUpperCase();
+            // Má sezónu (S01, 1.serie) a nemá epizodu
             const hasSe=up.includes(seTag)||(new RegExp(`(^|\\W)${sn}\\s*\\.?\\s*seri[ea]|seri[ea]\\s*${sn}(\\W|$)`,'i')).test(name);
-            return hasSe&&!hasAnyEpisode(name);
+            if(hasSe&&!hasAnyEpisode(name))return true;
+            // "komplet", "complete" = celá série (batch bez čísla sezóny)
+            if(/\b(komplet|complete)\b/i.test(name)&&!hasAnyEpisode(name))return true;
+            return false;
         };
 
         // Rok z TMDB - pro filtrování (jen filmy)
@@ -263,7 +265,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             if(type==='series'&&season!==undefined){
                 // 1. Přesná epizoda
                 if(!torrents.length){
-                    const found=filterYear(await searchSKT(name+' '+epTag));
+                    const found=filterYear(await searchSKT(name+' '+epTag,sktUid,sktPass));
                     if(found.length>0){
                         const ep=found.filter(t=>matchesExactEpisode(t.name));
                         const batch=found.filter(t=>isBatchSeason(t.name));
@@ -274,7 +276,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                 }
                 // 2. Sezóna batch
                 if(!batchTorrents.length&&!sktRateLimited){
-                    const found=filterYear(await searchSKT(name+' '+seTag));
+                    const found=filterYear(await searchSKT(name+' '+seTag,sktUid,sktPass));
                     if(found.length>0){
                         const batch=found.filter(t=>isBatchSeason(t.name));
                         if(batch.length>0)batchTorrents=batch;
@@ -285,13 +287,13 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                     }
                     await delay(300);
                 }
-                // 3. Holý název - pokud najde ale nic nemá S01/epizodu, ber jako batch
-                if(!torrents.length&&!batchTorrents.length&&!sktRateLimited){
-                    const found=filterYear(await searchSKT(name));
+                // 3. Holý název - hledej batch i když máme epizody
+                if(!batchTorrents.length&&!sktRateLimited){
+                    const found=filterYear(await searchSKT(name,sktUid,sktPass));
                     if(found.length>0){
                         const ep=found.filter(t=>matchesExactEpisode(t.name));
                         const batch=found.filter(t=>isBatchSeason(t.name));
-                        if(ep.length>0)torrents=ep;
+                        if(!torrents.length&&ep.length>0)torrents=ep;
                         if(batch.length>0)batchTorrents=batch;
                         // Pokud nic nemá sezónu/epizodu — filtruj: nesmí obsahovat JINOU sezónu
                         if(!torrents.length&&!batchTorrents.length){
@@ -319,7 +321,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
                 }
             } else {
                 if(!torrents.length&&!sktRateLimited){
-                    torrents=filterYear(await searchSKT(name));
+                    torrents=filterYear(await searchSKT(name,sktUid,sktPass));
                     await delay(300);
                 }
             }
@@ -395,6 +397,47 @@ app.get("/api/verify/:token",async(req,res)=>{
     res.json(u?{success:true,username:u.username,type:u.type,expiration:u.expiration}:{success:false});
 });
 
+// SKT Login - přihlásí se na sktorrent.eu a vrátí cookies
+app.post("/api/skt-login",express.json(),async(req,res)=>{
+    res.setHeader("Access-Control-Allow-Origin","*");
+    const{username,password}=req.body||{};
+    if(!username||!password)return res.json({success:false,error:"Zadej jméno a heslo"});
+    try{
+        const r=await axios.post(`${BASE_URL}/torrent/takelogin.php`,
+            `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+            {headers:{"Content-Type":"application/x-www-form-urlencoded","User-Agent":"Mozilla/5.0"},
+             maxRedirects:0,validateStatus:s=>s>=200&&s<400,timeout:10000});
+        const cookies=r.headers['set-cookie']||[];
+        let uid="",pass="";
+        for(const c of cookies){
+            const um=c.match(/uid=([^;]+)/);if(um)uid=um[1];
+            const pm=c.match(/pass=([^;]+)/);if(pm)pass=pm[1];
+        }
+        if(uid&&pass){
+            console.log(`[SKT] ✅ Login OK: ${username} (uid=${uid.slice(0,4)}...)`);
+            return res.json({success:true,uid,pass});
+        }
+        console.log(`[SKT] ❌ Login failed: ${username}`);
+        return res.json({success:false,error:"Špatné jméno nebo heslo"});
+    }catch(e){
+        // SKT redirects on success (302), check cookies from redirect response
+        if(e.response?.headers?.['set-cookie']){
+            const cookies=e.response.headers['set-cookie'];
+            let uid="",pass="";
+            for(const c of cookies){
+                const um=c.match(/uid=([^;]+)/);if(um)uid=um[1];
+                const pm=c.match(/pass=([^;]+)/);if(pm)pass=pm[1];
+            }
+            if(uid&&pass){
+                console.log(`[SKT] ✅ Login OK: ${username}`);
+                return res.json({success:true,uid,pass});
+            }
+        }
+        console.error("[SKT] Login error:",e.message);
+        return res.json({success:false,error:"Chyba připojení k SKTorrent"});
+    }
+});
+
 // ============ HTML ============
 function html(){return `<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SKTorrent+RD | Stremio</title>
@@ -408,8 +451,11 @@ h1{font-size:26px;background:linear-gradient(to right,#fff,#8b5cf6);-webkit-back
 label{display:block;margin-bottom:6px;font-size:14px;color:#d1d5db;font-weight:500}
 input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.3);color:#fff;font-size:15px;outline:none;margin-bottom:16px}input:focus{border-color:#8b5cf6}
 .opt{font-size:12px;color:#9ca3af;margin:-10px 0 16px;line-height:1.4}
+.sep{border:none;border-top:1px solid rgba(255,255,255,.08);margin:20px 0}
+.sec{font-size:16px;font-weight:600;margin-bottom:12px;color:#c4b5fd}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .btn{width:100%;padding:14px;border:none;border-radius:14px;font-size:16px;font-weight:600;cursor:pointer;margin-bottom:10px;color:#fff;transition:all .2s}
-.bv{background:linear-gradient(135deg,#059669,#10b981)}.bi{background:linear-gradient(135deg,#7c3aed,#8b5cf6);display:none}.btn:hover{opacity:.9;transform:translateY(-1px)}
+.bv{background:linear-gradient(135deg,#059669,#10b981)}.bi{background:linear-gradient(135deg,#7c3aed,#8b5cf6);display:none}.bs{background:linear-gradient(135deg,#dc2626,#ef4444)}.btn:hover{opacity:.9;transform:translateY(-1px)}
 .st{text-align:center;margin:12px 0;font-size:14px;min-height:20px}.ok{color:#34d399}.er{color:#f87171}.lo{color:#fbbf24}
 .url{background:rgba(0,0,0,.4);border-radius:10px;padding:12px;margin-top:10px;word-break:break-all;font-family:monospace;font-size:12px;color:#a78bfa;display:none}
 .cp{display:inline-block;padding:4px 12px;font-size:12px;background:rgba(139,92,246,.2);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;border-radius:6px;cursor:pointer;margin-top:8px}
@@ -418,30 +464,65 @@ input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(255,255,2
 <div class="c">
 <h1>SKTorrent + Real-Debrid</h1>
 <div class="sub">Stremio Addon <span class="badge b-sk">SKT</span><span class="badge b-rd">RD</span><span class="badge b-tm">TMDB</span></div>
-<div class="info">Prohledává <b>sktorrent.eu</b> a streamuje přes <b>Real-Debrid</b>.<br>TMDB pro české/slovenské názvy filmů.<br><br>
-RD klíč: <a href="https://real-debrid.com/apitoken" target="_blank">real-debrid.com/apitoken</a><br>
-TMDB klíč: <a href="https://www.themoviedb.org/settings/api" target="_blank">themoviedb.org/settings/api</a></div>
+<div class="info">Prohledává <b>sktorrent.eu</b> a streamuje přes <b>Real-Debrid</b>.<br>TMDB pro české/slovenské názvy filmů.</div>
 
-<label>Real-Debrid API Token *</label>
+<div class="sec">🔑 Real-Debrid *</div>
+<label>API Token</label>
 <input type="text" id="rd" placeholder="Vlož RD API token..." autocomplete="off">
+<div class="opt">Získej na <a href="https://real-debrid.com/apitoken" target="_blank" style="color:#a78bfa">real-debrid.com/apitoken</a></div>
 
-<label>TMDB API Key (volitelné)</label>
+<hr class="sep">
+<div class="sec">🎬 TMDB (volitelné)</div>
+<label>API Key</label>
 <input type="text" id="tmdb" placeholder="Vlož TMDB API key..." autocomplete="off">
-<div class="opt">Bez TMDB se hledá jen anglicky (OMDb). S TMDB se hledá i česky a slovensky.</div>
+<div class="opt">Bez TMDB se hledá jen anglicky. S TMDB i česky/slovensky.<br>Získej na <a href="https://www.themoviedb.org/settings/api" target="_blank" style="color:#a78bfa">themoviedb.org/settings/api</a></div>
 
-<button class="btn bv" onclick="verify()">🔑 Ověřit a nastavit</button>
+<hr class="sep">
+<div class="sec">🔓 SKTorrent účet (volitelné)</div>
+<div class="opt" style="margin-top:0;margin-bottom:12px">⚠️ Bez účtu najde addon méně výsledků. S účtem na sktorrent.eu se zobrazí i omezený obsah.</div>
+<div class="row">
+<div><label>Jméno</label><input type="text" id="skt_user" placeholder="SKT jméno..." autocomplete="off"></div>
+<div><label>Heslo</label><input type="password" id="skt_pass" placeholder="SKT heslo..." autocomplete="off"></div>
+</div>
+<button class="btn bs" onclick="sktLogin()" id="skt_btn">🔓 Přihlásit na SKTorrent</button>
+<div class="st" id="skt_st"></div>
+
+<hr class="sep">
+<button class="btn bv" onclick="verify()">🔑 Ověřit a nainstalovat</button>
 <div class="st" id="s"></div>
 <button class="btn bi" id="ib" onclick="install()">📦 Nainstalovat do Stremio</button>
 <div class="url" id="u"></div>
-<div class="ft"><div>CZ/SK torrenty</div><div>Real-Debrid stream</div><div>TMDB CZ/SK názvy</div><div>Bez registrace SKT</div><div>Auto výběr epizod</div><div>Rychlé zobrazení</div></div>
+<div class="ft"><div>CZ/SK torrenty</div><div>Real-Debrid stream</div><div>TMDB CZ/SK názvy</div><div>SKT přihlášení</div><div>Auto výběr epizod</div><div>Rychlé zobrazení</div></div>
 </div>
 <script>
 const B=location.origin;
+let sktUid='',sktPass='';
+
+async function sktLogin(){
+    const user=document.getElementById('skt_user').value.trim();
+    const pass=document.getElementById('skt_pass').value.trim();
+    const st=document.getElementById('skt_st');
+    if(!user||!pass){st.className='st er';st.textContent='❌ Zadej jméno a heslo';return}
+    st.className='st lo';st.textContent='⏳ Přihlašuji...';
+    try{
+        const r=await(await fetch(B+'/api/skt-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass})})).json();
+        if(r.success){
+            sktUid=r.uid;sktPass=r.pass;
+            st.className='st ok';st.textContent='✅ Přihlášeno na SKTorrent';
+            document.getElementById('skt_btn').textContent='✅ SKT přihlášeno';
+        }else{st.className='st er';st.textContent='❌ '+(r.error||'Přihlášení selhalo')}
+    }catch(e){st.className='st er';st.textContent='❌ Chyba: '+e.message}
+}
+
 function getToken(){
     const rd=document.getElementById('rd').value.trim();
     const tmdb=document.getElementById('tmdb').value.trim();
-    return tmdb?rd+'--'+tmdb:rd;
+    let tok=rd;
+    if(tmdb||sktUid)tok+='--'+(tmdb||'');
+    if(sktUid)tok+='--'+sktUid+'--'+sktPass;
+    return tok;
 }
+
 async function verify(){
     const rd=document.getElementById('rd').value.trim();
     const s=document.getElementById('s'),ib=document.getElementById('ib'),u=document.getElementById('u');
@@ -452,8 +533,10 @@ async function verify(){
         if(r.success){
             const d=new Date(r.expiration).toLocaleDateString('cs-CZ');
             const tmdb=document.getElementById('tmdb').value.trim();
-            const tmdbStatus=tmdb?' + TMDB ✅':' (bez TMDB)';
-            s.className='st ok';s.textContent='✅ '+r.username+' ('+r.type+') | do: '+d+tmdbStatus;
+            let extra='';
+            if(tmdb)extra+=' + TMDB';
+            if(sktUid)extra+=' + SKT';
+            s.className='st ok';s.textContent='✅ '+r.username+' ('+r.type+') | do: '+d+extra;
             ib.style.display='block';u.style.display='block';
             const tok=getToken();const m=B+'/'+tok+'/manifest.json';
             u.innerHTML=m+'<br><span class="cp" onclick="copyUrl()">📋 Kopírovat URL</span>';
@@ -463,7 +546,6 @@ async function verify(){
 function install(){const tok=getToken();if(!tok)return;window.location.href='stremio://'+B.replace(/https?:\\/\\//,'')+'/'+tok+'/manifest.json'}
 function copyUrl(){const tok=getToken();navigator.clipboard.writeText(B+'/'+tok+'/manifest.json').then(()=>{const c=document.querySelector('.cp');c.textContent='✅ Zkopírováno';setTimeout(()=>c.textContent='📋 Kopírovat URL',2000)})}
 document.getElementById('rd').addEventListener('keypress',e=>{if(e.key==='Enter')verify()});
-document.getElementById('tmdb').addEventListener('keypress',e=>{if(e.key==='Enter')verify()});
 </script></body></html>`;}
 
 app.listen(PORT,()=>console.log(`🚀 SKTorrent+RD http://localhost:${PORT}`));
