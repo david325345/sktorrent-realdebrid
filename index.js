@@ -149,21 +149,8 @@ async function rdUnrestrict(token,link){try{return(await axios.post(`${RD_API}/u
 async function rdDelete(token,id){try{await axios.delete(`${RD_API}/torrents/delete/${id}`,{headers:{Authorization:`Bearer ${token}`},timeout:5000});}catch(e){}}
 async function rdVerify(token){try{return(await axios.get(`${RD_API}/user`,{headers:{Authorization:`Bearer ${token}`},timeout:5000})).data;}catch(e){return null;}}
 
-// RD Instant Availability - zjistí které hashe jsou v cache bez stahování
-async function rdInstantAvail(token,hashes){
-    if(!hashes.length)return new Set();
-    try{
-        const url=`${RD_API}/torrents/instantAvailability/${hashes.join('/')}`;
-        const r=await axios.get(url,{headers:{Authorization:`Bearer ${token}`},timeout:8000});
-        const cached=new Set();
-        for(const[hash,data] of Object.entries(r.data||{})){
-            // Pokud má 'rd' pole s aspoň jedním záznamem → je v cache
-            if(data?.rd?.length>0)cached.add(hash.toLowerCase());
-        }
-        console.log(`[RD] ⚡ Cache: ${cached.size}/${hashes.length}`);
-        return cached;
-    }catch(e){console.error("[RD] instantAvail:",e.response?.data?.error||e.message);return new Set();}
-}
+// Downloading video URL - nahradit vlastní URL po uploadu na GitHub
+const DOWNLOADING_VIDEO='https://raw.githubusercontent.com/user/repo/main/downloading.mp4';
 
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
@@ -356,10 +343,6 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
 
         if(!torrents.length&&!batchTorrents.length)return res.json({streams:[]});
         
-        // RD Instant Availability check
-        const allHashes=[...new Set([...torrents,...batchTorrents].map(t=>t.hash))];
-        const cachedHashes=await rdInstantAvail(rdToken,allHashes);
-        
         const proto=req.headers['x-forwarded-proto']||req.protocol;
         const host=req.headers['x-forwarded-host']||req.get('host');
         const baseUrl=`${proto}://${host}`;
@@ -374,22 +357,15 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             const se=season!==undefined?`/${season}/${episode}`:'';
             const proxyUrl=`${baseUrl}/${req.params.token}/play/${t.hash}${se}/video.mp4`;
             const batchLabel=isBatch?` 📦 ${epTag} Batch`:'';
-            const isCached=cachedHashes.has(t.hash);
-            const cacheIcon=isCached?'⚡ Instant':'🕐 Stahování';
             const cat=t.cat||'SKT';
             streams.push({
                 name:`SKT+RD\n${cat}`,
-                description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n${cacheIcon}`,
+                description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`,
                 url:proxyUrl,
                 behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}
             });
         };
 
-        // Seřaď cached torrenty nahoru
-        const sortByCache=(a,b)=>(cachedHashes.has(b.hash)?1:0)-(cachedHashes.has(a.hash)?1:0);
-        torrents.sort(sortByCache);
-        batchTorrents.sort(sortByCache);
-        
         for(const t of torrents){addStream(t,false);if(streams.length>=12)break;}
         for(const t of batchTorrents){addStream(t,true);if(streams.length>=15)break;}
 
@@ -405,7 +381,10 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     const episode=req.params.episode?parseInt(req.params.episode):undefined;
     console.log(`\n▶️ Play: ${hash} S${season??'-'}E${episode??'-'}`);
     const streamUrl=await resolveRD(rdToken,hash,season,episode);
-    if(!streamUrl){console.error("[Play] ❌ Failed");return res.status(502).send("Failed to resolve via Real-Debrid");}
+    if(!streamUrl){
+        console.log("[Play] 🕐 Torrent se stahuje → info video");
+        return res.redirect(302,DOWNLOADING_VIDEO);
+    }
     console.log(`[Play] ✅ Redirect → ${streamUrl.slice(0,80)}...`);
     return res.redirect(302,streamUrl);
 });
