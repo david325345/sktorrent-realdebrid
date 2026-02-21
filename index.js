@@ -354,10 +354,12 @@ app.get("/:token/meta/:type/:id.json",async(req,res)=>{
 app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{type,id}=req.params;
+    console.log(`\n[STREAM] raw id="${id}" type="${type}"`);
     const{rdToken,tmdbKey,sktUid,sktPass}=parseToken(req.params.token);
     
-    // SKT přímý stream (z catalog search)
+    // SKT přímý stream (z catalog search) - normální Stremio
     if(id.startsWith("skt:")){
+        console.log(`[STREAM] ✅ skt: prefix detected`);
         const hash=id.replace("skt:","");
         const t=sktSearchCache.get(hash);
         const proto=req.headers['x-forwarded-proto']||req.protocol;
@@ -385,13 +387,15 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     
     // Normální IMDb stream (stávající logika)
     const[imdbId,sRaw,eRaw]=id.split(":");
+    console.log(`[STREAM] split: imdbId="${imdbId}" sRaw="${sRaw}" eRaw="${eRaw}"`);
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
     
     // Omni/Apple TV: skt:HASH se rozpadne na imdbId="skt", sRaw=HASH
-    if(imdbId==="skt"&&sRaw){
-        const hash=sRaw.toLowerCase();
+    if(imdbId==="skt"){
+        const hash=(sRaw||"").toLowerCase();
+        if(!hash){console.log(`[Omni] ❌ No hash`);return res.json({streams:[]});}
         const t=sktSearchCache.get(hash);
-        console.log(`\n🎬 [Omni] SKT stream: ${hash}`);
+        console.log(`\n🎬 [Omni] SKT stream: ${hash} (cache: ${!!t})`);
         
         // Rovnou resolve přes RD a vrátit přímý URL
         const streamUrl=await resolveRD(rdToken,hash);
