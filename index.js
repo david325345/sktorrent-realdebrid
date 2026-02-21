@@ -108,7 +108,10 @@ async function searchSKT(query, sktUid, sktPass){
             if(!szM)return;
             const cat=td.find("b").first().text().trim();
             const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
-            results.push({name,hash,size:szM[1].trim(),seeds:sdM?parseInt(sdM[1]):0,cat});
+            // Obrázek - src z img tagu
+            let poster=$(img).attr("src")||"";
+            if(poster&&!poster.startsWith("http"))poster=`${BASE_URL}/${poster.replace(/^\//,'')}`;
+            results.push({name,hash,size:szM[1].trim(),seeds:sdM?parseInt(sdM[1]):0,cat,poster});
         });
 
         if(results.length===0){
@@ -246,7 +249,91 @@ app.get("/configure",(req,res)=>{res.setHeader("Content-Type","text/html; charse
 
 app.get("/:token/manifest.json",(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
-    res.json({id:"org.stremio.sktorrent.rd",version:"2.4.0",name:"SKTorrent+RD",description:"CZ/SK torrenty ze sktorrent.eu s Real-Debrid",logo:"https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/logo.png",types:["movie","series"],catalogs:[],resources:["stream"],idPrefixes:["tt"],behaviorHints:{configurable:true,configurationRequired:false}});
+    res.json({
+        id:"org.stremio.sktorrent.rd",
+        version:"2.5.0",
+        name:"SKTorrent+RD",
+        description:"CZ/SK torrenty ze sktorrent.eu s Real-Debrid",
+        logo:"https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/logo.png",
+        types:["movie","series","other"],
+        catalogs:[
+            {type:"other",id:"skt-search",name:"SKTorrent",extra:[{name:"search",isRequired:true}]}
+        ],
+        resources:["stream","catalog","meta"],
+        idPrefixes:["tt","skt:"],
+        behaviorHints:{configurable:true,configurationRequired:false}
+    });
+});
+
+// ============ SKT SEARCH CACHE ============
+// Cache SKT výsledků pro meta endpoint (search → klik na výsledek)
+const sktSearchCache=new Map();
+// Vyčisti cache každou hodinu (max 1000 záznamů)
+setInterval(()=>{if(sktSearchCache.size>1000)sktSearchCache.clear();},3600000);
+
+// ============ CATALOG (SKT přímé hledání) ============
+app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
+    res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
+    const{sktUid,sktPass}=parseToken(req.params.token);
+    const extraStr=req.params.extra||"";
+    const searchMatch=extraStr.match(/search=([^&]+)/);
+    if(!searchMatch)return res.json({metas:[]});
+    const query=decodeURIComponent(searchMatch[1]);
+    console.log(`\n🔍 Catalog search: "${query}"`);
+    
+    const results=await searchSKT(query,sktUid,sktPass);
+    if(!results.length)return res.json({metas:[]});
+    
+    const metas=results.map(t=>{
+        // Uložit do cache pro meta/stream endpoint
+        sktSearchCache.set(t.hash,t);
+        
+        let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+        if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
+        
+        const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
+        const flagStr=flags.length?` ${flags.join("/")}`:""
+        
+        return{
+            id:`skt:${t.hash}`,
+            type:"other",
+            name:clean,
+            poster:t.poster||undefined,
+            description:`📁 ${t.cat||'SKT'}  📀 ${t.size}  👤 ${t.seeds}${flagStr}`,
+            posterShape:"regular"
+        };
+    });
+    
+    console.log(`🔍 Catalog: ${metas.length} výsledků`);
+    return res.json({metas});
+});
+
+// ============ META (detail SKT torrentu) ============
+app.get("/:token/meta/:type/:id.json",async(req,res)=>{
+    res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
+    const{id}=req.params;
+    
+    if(!id.startsWith("skt:"))return res.json({meta:null});
+    const hash=id.replace("skt:","");
+    const t=sktSearchCache.get(hash);
+    
+    if(!t)return res.json({meta:{id,type:"other",name:hash,description:"Torrent z SKTorrent"}});
+    
+    let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+    if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
+    
+    const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
+    const flagStr=flags.length?` ${flags.join("/")}`:""
+    
+    return res.json({meta:{
+        id,
+        type:"other",
+        name:clean,
+        poster:t.poster||undefined,
+        posterShape:"regular",
+        description:`📁 Kategorie: ${t.cat||'SKT'}\n📀 Velikost: ${t.size}\n👤 Seeds: ${t.seeds}${flagStr}\n\n${t.name}`,
+        background:t.poster||undefined
+    }});
 });
 
 // STREAM
@@ -254,6 +341,35 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{type,id}=req.params;
     const{rdToken,tmdbKey,sktUid,sktPass}=parseToken(req.params.token);
+    
+    // SKT přímý stream (z catalog search)
+    if(id.startsWith("skt:")){
+        const hash=id.replace("skt:","");
+        const t=sktSearchCache.get(hash);
+        const proto=req.headers['x-forwarded-proto']||req.protocol;
+        const host=req.headers['x-forwarded-host']||req.get('host');
+        const baseUrl=`${proto}://${host}`;
+        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
+        
+        let name='SKT+RD';
+        let desc='⚡ Real-Debrid';
+        if(t){
+            let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+            if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
+            const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
+            const flagStr=flags.length?` ${flags.join("/")}`:""
+            name=`SKT+RD\n${t.cat||'SKT'}`;
+            desc=`${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`;
+        }
+        
+        console.log(`\n🎬 SKT stream: ${hash}`);
+        return res.json({streams:[{
+            name,description:desc,url:proxyUrl,
+            behaviorHints:{bingeGroup:`skt-rd-${hash.slice(0,8)}`,notWebReady:true}
+        }]});
+    }
+    
+    // Normální IMDb stream (stávající logika)
     const[imdbId,sRaw,eRaw]=id.split(":");
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
