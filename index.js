@@ -576,15 +576,7 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     console.log(`\n▶️ Play: ${hash} S${season??'-'}E${episode??'-'}`);
     const streamUrl=await resolveRD(rdToken,hash,season,episode);
     if(!streamUrl){
-        console.log("[Play] 🕐 Torrent se stahuje");
-        // Detekce Omni/Apple TV — nemůže přehrát info video
-        const ua=(req.headers['user-agent']||'').toLowerCase();
-        const isOmni=ua.includes('apple')||ua.includes('darwin')||ua.includes('cfnetwork');
-        if(isOmni){
-            console.log("[Play] 📱 Omni → 503");
-            return res.status(503).json({error:"Torrent se stahuje. Zkuste za chvíli."});
-        }
-        // Normální Stremio → info video
+        console.log("[Play] 🕐 Torrent se stahuje → info video");
         if(fs.existsSync(INFO_VIDEO_PATH)){
             res.setHeader('Content-Type','video/mp4');
             res.setHeader('Content-Length',fs.statSync(INFO_VIDEO_PATH).size);
