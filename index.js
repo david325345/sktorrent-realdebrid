@@ -274,7 +274,7 @@ app.get("/:token/manifest.json",(req,res)=>{
         types:["movie","series"],
         catalogs,
         resources,
-        idPrefixes:["tt","skt:"],
+        idPrefixes:["tt"],
         behaviorHints:{configurable:true,configurationRequired:false}
     });
 });
@@ -309,7 +309,7 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
         const flagStr=flags.length?` ${flags.join("/")}`:""
         
         return{
-            id:`skt:${t.hash}`,
+            id:`skt${t.hash}`,
             type:"movie",
             name:clean,
             poster:t.poster||undefined,
@@ -327,8 +327,8 @@ app.get("/:token/meta/:type/:id.json",async(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{id}=req.params;
     
-    if(!id.startsWith("skt:"))return res.json({meta:null});
-    const hash=id.replace("skt:","");
+    if(!id.startsWith("skt")||id.length<10)return res.json({meta:null});
+    const hash=id.replace(/^skt/,"");
     const t=sktSearchCache.get(hash);
     
     if(!t)return res.json({meta:{id,type:"movie",name:hash,description:"Torrent z SKTorrent"}});
@@ -358,9 +358,9 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     const{rdToken,tmdbKey,sktUid,sktPass}=parseToken(req.params.token);
     
     // SKT přímý stream (z catalog search) - normální Stremio
-    if(id.startsWith("skt:")){
+    if(id.startsWith("skt")&&id.length>10){
         console.log(`[STREAM] ✅ skt: prefix detected`);
-        const hash=id.replace("skt:","");
+        const hash=id.replace(/^skt/,"");
         const t=sktSearchCache.get(hash);
         const proto=req.headers['x-forwarded-proto']||req.protocol;
         const host=req.headers['x-forwarded-host']||req.get('host');
@@ -390,10 +390,9 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     console.log(`[STREAM] split: imdbId="${imdbId}" sRaw="${sRaw}" eRaw="${eRaw}"`);
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
     
-    // Omni/Apple TV: skt:HASH se rozpadne na imdbId="skt", sRaw=HASH
-    if(imdbId==="skt"){
-        const hash=(sRaw||"").toLowerCase();
-        if(!hash){console.log(`[Omni] ❌ No hash`);return res.json({streams:[]});}
+    // Omni/Apple TV: ID je "sktHASH" jako celý imdbId (nebo jen "skt" pokud Omni ořízne)
+    if(imdbId.startsWith("skt")&&imdbId.length>10){
+        const hash=imdbId.replace(/^skt/,"").toLowerCase();
         const t=sktSearchCache.get(hash);
         console.log(`\n🎬 [Omni] SKT stream: ${hash} (cache: ${!!t})`);
         
