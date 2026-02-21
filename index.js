@@ -410,10 +410,13 @@ app.post("/api/skt-login",express.json(),async(req,res)=>{
     const{username,password}=req.body||{};
     if(!username||!password)return res.json({success:false,error:"Zadej jméno a heslo"});
     try{
-        const r=await axios.post(`${BASE_URL}/takelogin.php`,
-            `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
-            {headers:{"Content-Type":"application/x-www-form-urlencoded","User-Agent":"Mozilla/5.0"},
-             maxRedirects:0,validateStatus:s=>s>=200&&s<400,timeout:10000});
+        const r=await axios.post(`${BASE_URL}/torrent/login.php`,
+            `uid=${encodeURIComponent(username)}&pwd=${encodeURIComponent(password)}`,
+            {headers:{"Content-Type":"application/x-www-form-urlencoded","User-Agent":"Mozilla/5.0","Referer":`${BASE_URL}/torrent/login.php`},
+             maxRedirects:0,validateStatus:()=>true,timeout:10000});
+        
+        console.log(`[SKT] Login response: status=${r.status}, cookies=${(r.headers['set-cookie']||[]).length}`);
+        
         const cookies=r.headers['set-cookie']||[];
         let uid="",pass="";
         for(const c of cookies){
@@ -421,25 +424,12 @@ app.post("/api/skt-login",express.json(),async(req,res)=>{
             const pm=c.match(/pass=([^;]+)/);if(pm)pass=pm[1];
         }
         if(uid&&pass){
-            console.log(`[SKT] ✅ Login OK: ${username} (uid=${uid.slice(0,4)}...)`);
+            console.log(`[SKT] ✅ Login OK: ${username}`);
             return res.json({success:true,uid,pass});
         }
-        console.log(`[SKT] ❌ Login failed: ${username}`);
+        console.log(`[SKT] ❌ Login failed: ${username} (no cookies)`);
         return res.json({success:false,error:"Špatné jméno nebo heslo"});
     }catch(e){
-        // SKT redirects on success (302), check cookies from redirect response
-        if(e.response?.headers?.['set-cookie']){
-            const cookies=e.response.headers['set-cookie'];
-            let uid="",pass="";
-            for(const c of cookies){
-                const um=c.match(/uid=([^;]+)/);if(um)uid=um[1];
-                const pm=c.match(/pass=([^;]+)/);if(pm)pass=pm[1];
-            }
-            if(uid&&pass){
-                console.log(`[SKT] ✅ Login OK: ${username}`);
-                return res.json({success:true,uid,pass});
-            }
-        }
         console.error("[SKT] Login error:",e.message);
         return res.json({success:false,error:"Chyba připojení k SKTorrent"});
     }
