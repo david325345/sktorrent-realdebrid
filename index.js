@@ -386,6 +386,42 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     // Normální IMDb stream (stávající logika)
     const[imdbId,sRaw,eRaw]=id.split(":");
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
+    
+    // Omni/Apple TV: skt:HASH se rozpadne na imdbId="skt", sRaw=HASH
+    if(imdbId==="skt"&&sRaw){
+        const hash=sRaw.toLowerCase();
+        const t=sktSearchCache.get(hash);
+        console.log(`\n🎬 [Omni] SKT stream: ${hash}`);
+        
+        // Rovnou resolve přes RD a vrátit přímý URL
+        const streamUrl=await resolveRD(rdToken,hash);
+        if(streamUrl){
+            let name='SKT+RD';
+            let desc='⚡ Real-Debrid';
+            if(t){
+                let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
+                if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
+                name=`SKT+RD\n${t.cat||'SKT'}`;
+                desc=`${clean}\n⚡ Real-Debrid`;
+            }
+            console.log(`[Omni] ✅ Direct URL`);
+            return res.json({streams:[{
+                name,description:desc,url:streamUrl,
+                behaviorHints:{notWebReady:true}
+            }]});
+        }
+        // Torrent se stahuje — vrať proxy URL jako fallback
+        const proto=req.headers['x-forwarded-proto']||req.protocol;
+        const host=req.headers['x-forwarded-host']||req.get('host');
+        const baseUrl=`${proto}://${host}`;
+        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
+        console.log(`[Omni] 🕐 Stahuje se → proxy URL`);
+        return res.json({streams:[{
+            name:'SKT+RD',description:'🕐 Torrent se stahuje...\n⚡ Real-Debrid',url:proxyUrl,
+            behaviorHints:{notWebReady:true}
+        }]});
+    }
+    
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
     try{
         const titles=await getTitle(imdbId,tmdbKey);if(!titles)return res.json({streams:[]});
@@ -726,20 +762,24 @@ let keepAliveInterval=null;
 let serviceUrl='';
 
 function startKeepAlive(url){
-    if(keepAliveInterval)return; // Už běží
+    if(keepAliveInterval)return;
     serviceUrl=url;
     const now=new Date();
-    // Kolik ms do půlnoci
     const midnight=new Date(now);
     midnight.setHours(24,0,0,0);
     const msUntilMidnight=midnight.getTime()-now.getTime();
     
     console.log(`[KeepAlive] ✅ Aktivní do půlnoci (${Math.round(msUntilMidnight/60000)} min)`);
+    console.log(`[KeepAlive] 🔗 URL: ${serviceUrl}`);
     
-    // Ping každých 10 minut
+    // Ping každých 5 minut (Render uspí po 15min)
     keepAliveInterval=setInterval(async()=>{
-        try{await axios.get(serviceUrl,{timeout:5000});console.log('[KeepAlive] 🏓 ping');}
-        catch(e){}
+        try{
+            const r=await axios.get(serviceUrl,{timeout:8000});
+            console.log(`[KeepAlive] 🏓 ping OK (${r.status})`);
+        }catch(e){
+            console.log(`[KeepAlive] ❌ ping failed: ${e.message}`);
+        }
     },600000); // 10 min
     
     // Zastav o půlnoci
@@ -756,7 +796,9 @@ function startKeepAlive(url){
 app.use((req,res,next)=>{
     if(!keepAliveInterval&&req.headers.host){
         const proto=req.headers['x-forwarded-proto']||req.protocol;
-        startKeepAlive(`${proto}://${req.headers.host}/`);
+        const host=req.headers['x-forwarded-host']||req.get('host');
+        console.log(`[KeepAlive] 🔄 První request od ${host}`);
+        startKeepAlive(`${proto}://${host}/`);
     }
     next();
 });
