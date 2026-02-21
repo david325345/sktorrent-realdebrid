@@ -148,7 +148,27 @@ async function rdDelete(token,id){try{await axios.delete(`${RD_API}/torrents/del
 async function rdVerify(token){try{return(await axios.get(`${RD_API}/user`,{headers:{Authorization:`Bearer ${token}`},timeout:5000})).data;}catch(e){return null;}}
 
 // Downloading video URL - nahradit vlastní URL po uploadu na GitHub
-const DOWNLOADING_VIDEO='https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/downloading.mp4';
+// Generuj info video při startu serveru
+const fs=require('fs');
+const{execSync}=require('child_process');
+const INFO_VIDEO_PATH='/tmp/downloading.mp4';
+
+function generateInfoVideo(){
+    try{
+        execSync(`ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=6 -f lavfi -i anullsrc=r=44100:cl=stereo -vf "drawtext=text='Torrent se stahuje...':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2-30,drawtext=text='Zkuste to znovu za chvili.':fontsize=28:fontcolor=gray:x=(w-text_w)/2:y=(h-text_h)/2+30" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -shortest -t 6 ${INFO_VIDEO_PATH} 2>/dev/null`);
+        console.log('[INFO] ✅ Info video vygenerováno (ffmpeg)');
+        return;
+    }catch(e){}
+    // Fallback: minimální černé 1s MP4 bez ffmpeg
+    try{
+        execSync(`ffmpeg -y -f lavfi -i color=c=black:s=640x360:d=3 -c:v libx264 -preset ultrafast -t 3 ${INFO_VIDEO_PATH} 2>/dev/null`);
+        console.log('[INFO] ✅ Info video vygenerováno (fallback)');
+    }catch(e){
+        console.log('[INFO] ⚠️ ffmpeg nedostupný');
+    }
+}
+generateInfoVideo();
+const DOWNLOADING_VIDEO_URL='https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/downloading.mp4';
 
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
@@ -385,14 +405,12 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     const streamUrl=await resolveRD(rdToken,hash,season,episode);
     if(!streamUrl){
         console.log("[Play] 🕐 Torrent se stahuje → info video");
-        // Servíruj video přímo z URL (Stremio nemusí následovat redirect na GitHub)
-        try{
-            const vid=await axios.get(DOWNLOADING_VIDEO,{responseType:'stream',timeout:10000});
+        if(fs.existsSync(INFO_VIDEO_PATH)){
             res.setHeader('Content-Type','video/mp4');
-            return vid.data.pipe(res);
-        }catch(e){
-            return res.redirect(302,DOWNLOADING_VIDEO);
+            res.setHeader('Content-Length',fs.statSync(INFO_VIDEO_PATH).size);
+            return fs.createReadStream(INFO_VIDEO_PATH).pipe(res);
         }
+        return res.redirect(302,DOWNLOADING_VIDEO_URL);
     }
     console.log(`[Play] ✅ Redirect → ${streamUrl.slice(0,80)}...`);
     return res.redirect(302,streamUrl);
