@@ -274,7 +274,7 @@ app.get("/:token/manifest.json",(req,res)=>{
         types:["movie","series"],
         catalogs,
         resources,
-        idPrefixes:["tt"],
+        idPrefixes:["tt","skt"],
         behaviorHints:{configurable:true,configurationRequired:false}
     });
 });
