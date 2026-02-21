@@ -229,6 +229,8 @@ async function resolveRDAll(token,hash){
         }
     }
     console.log(`[RD] ✅ ${results.length} souborů`);
+    // Seřadit podle názvu souboru (přirozené řazení)
+    results.sort((a,b)=>a.filename.localeCompare(b.filename,undefined,{numeric:true}));
     return {status:"ready",files:results};
 }
 
