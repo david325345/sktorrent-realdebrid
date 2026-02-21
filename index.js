@@ -108,9 +108,22 @@ async function searchSKT(query, sktUid, sktPass){
             if(!szM)return;
             const cat=td.find("b").first().text().trim();
             const sdM=block.match(/Odosielaju\s*:\s*(\d+)/i);
-            // Obrázek - src z img tagu
-            let poster=$(img).attr("src")||"";
+            // Obrázek - hledej poster v okolí torrentu
+            let poster="";
+            // 1. Zkus img v odkazu (thumbnail)
+            const imgSrc=$(img).attr("src")||"";
+            // 2. Zkus data-original (lazy load)
+            const imgLazy=$(img).attr("data-original")||$(img).attr("data-src")||"";
+            // 3. Zkus najít větší obrázek v celém td
+            const tdImgs=td.find("img");
+            let bestImg=imgLazy||imgSrc;
+            tdImgs.each((j,timg)=>{
+                const s=$(timg).attr("data-original")||$(timg).attr("data-src")||$(timg).attr("src")||"";
+                if(s&&s.length>bestImg.length)bestImg=s;
+            });
+            poster=bestImg;
             if(poster&&!poster.startsWith("http"))poster=`${BASE_URL}/${poster.replace(/^\//,'')}`;
+            if(i<3)console.log(`[SKT] 🖼️ Poster[${i}]: "${poster}" (img=${imgSrc.slice(0,50)}, lazy=${imgLazy.slice(0,50)})`);
             results.push({name,hash,size:szM[1].trim(),seeds:sdM?parseInt(sdM[1]):0,cat,poster});
         });
 
