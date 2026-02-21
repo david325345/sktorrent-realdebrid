@@ -298,7 +298,7 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
     const results=await searchSKT(query,sktUid,sktPass);
     if(!results.length)return res.json({metas:[]});
     
-    const metas=results.map(t=>{
+    const metas=results.map((t,i)=>{
         // Uložit do cache pro meta/stream endpoint
         sktSearchCache.set(t.hash,t);
         
@@ -307,6 +307,8 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
         
         const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
         const flagStr=flags.length?` ${flags.join("/")}`:""
+        
+        if(i<3)console.log(`[Catalog] 🖼️ [${i}] poster="${t.poster||'none'}" name="${clean.slice(0,40)}"`);
         
         return{
             id:`skt${t.hash}`,
@@ -373,6 +375,7 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         
         let name='SKT+RD';
         let desc='⚡ Real-Debrid';
+        let thumb=undefined;
         if(t){
             let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
             if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
@@ -380,13 +383,13 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
             const flagStr=flags.length?` ${flags.join("/")}`:""
             name=`SKT+RD\n${t.cat||'SKT'}`;
             desc=`${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`;
+            thumb=t.poster||undefined;
         }
         
         console.log(`\n🎬 SKT stream: ${hash}`);
-        return res.json({streams:[{
-            name,description:desc,url:proxyUrl,
-            behaviorHints:{bingeGroup:`skt-rd-${hash.slice(0,8)}`,notWebReady:true}
-        }]});
+        const stream={name,description:desc,url:proxyUrl,behaviorHints:{bingeGroup:`skt-rd-${hash.slice(0,8)}`,notWebReady:true}};
+        if(thumb)stream.thumbnail=thumb;
+        return res.json({streams:[stream]});
     }
     
     // Normální IMDb stream (stávající logika)
