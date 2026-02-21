@@ -542,26 +542,38 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const baseUrl=`${proto}://${host}`;
         const streams=[];const seen=new Set();
 
-        const addStream=(t,isBatch)=>{
+        const addStream=async(t,isBatch)=>{
             if(isMultiSeason(t.name)||seen.has(t.hash))return;seen.add(t.hash);
             const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
             const flagStr=flags.length?` ${flags.join("/")}`:"";
             let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
             if(t.cat&&clean.startsWith(t.cat)) clean=clean.slice(t.cat.length).trim();
             const se=season!==undefined?`/${season}/${episode}`:'';
-            const proxyUrl=`${baseUrl}/${req.params.token}/play/${t.hash}${se}/video.mp4`;
             const batchLabel=isBatch?` 📦 ${epTag} Batch`:'';
             const cat=t.cat||'SKT';
-            streams.push({
-                name:`SKT+RD\n${cat}`,
-                description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`,
-                url:proxyUrl,
-                behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}
-            });
+            
+            // Zkontroluj RD cache
+            const streamUrl=await resolveRD(rdToken,t.hash,season,episode);
+            if(streamUrl){
+                streams.push({
+                    name:`SKT+RD\n${cat}`,
+                    description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid | ✅ V cache`,
+                    url:streamUrl,
+                    behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}
+                });
+            }else{
+                const proxyUrl=`${baseUrl}/${req.params.token}/play/${t.hash}${se}/video.mp4`;
+                streams.push({
+                    name:`SKT+RD\n${cat}`,
+                    description:`${clean}${batchLabel}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n🕐 Stahuje se...`,
+                    url:proxyUrl,
+                    behaviorHints:{bingeGroup:`skt-rd-${t.hash.slice(0,8)}`,notWebReady:true}
+                });
+            }
         };
 
-        for(const t of torrents){addStream(t,false);if(streams.length>=12)break;}
-        for(const t of batchTorrents){addStream(t,true);if(streams.length>=15)break;}
+        for(const t of torrents){await addStream(t,false);if(streams.length>=12)break;}
+        for(const t of batchTorrents){await addStream(t,true);if(streams.length>=15)break;}
 
         console.log(`✅ ${streams.length} streams`);return res.json({streams});
     }catch(e){console.error("Error:",e.message);return res.json({streams:[]});}
