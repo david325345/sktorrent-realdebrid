@@ -148,27 +148,21 @@ async function rdDelete(token,id){try{await axios.delete(`${RD_API}/torrents/del
 async function rdVerify(token){try{return(await axios.get(`${RD_API}/user`,{headers:{Authorization:`Bearer ${token}`},timeout:5000})).data;}catch(e){return null;}}
 
 // Downloading video URL - nahradit vlastní URL po uploadu na GitHub
-// Generuj info video při startu serveru
+// Info video - stáhne z GitHub jednou při startu, servíruje lokálně
 const fs=require('fs');
-const{execSync}=require('child_process');
 const INFO_VIDEO_PATH='/tmp/downloading.mp4';
+const DOWNLOADING_VIDEO_URL='https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/downloading.mp4';
 
-function generateInfoVideo(){
+async function downloadInfoVideo(){
     try{
-        execSync(`ffmpeg -y -f lavfi -i color=c=black:s=1280x720:d=6 -f lavfi -i anullsrc=r=44100:cl=stereo -vf "drawtext=text='Torrent se stahuje...':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2-30,drawtext=text='Zkuste to znovu za chvili.':fontsize=28:fontcolor=gray:x=(w-text_w)/2:y=(h-text_h)/2+30" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -shortest -t 6 ${INFO_VIDEO_PATH} 2>/dev/null`);
-        console.log('[INFO] ✅ Info video vygenerováno (ffmpeg)');
-        return;
-    }catch(e){}
-    // Fallback: minimální černé 1s MP4 bez ffmpeg
-    try{
-        execSync(`ffmpeg -y -f lavfi -i color=c=black:s=640x360:d=3 -c:v libx264 -preset ultrafast -t 3 ${INFO_VIDEO_PATH} 2>/dev/null`);
-        console.log('[INFO] ✅ Info video vygenerováno (fallback)');
+        const r=await axios.get(DOWNLOADING_VIDEO_URL,{responseType:'arraybuffer',timeout:15000});
+        fs.writeFileSync(INFO_VIDEO_PATH,Buffer.from(r.data));
+        console.log(`[INFO] ✅ Info video staženo (${Math.round(r.data.byteLength/1024)}KB)`);
     }catch(e){
-        console.log('[INFO] ⚠️ ffmpeg nedostupný');
+        console.log('[INFO] ⚠️ Nelze stáhnout info video:',e.message);
     }
 }
-generateInfoVideo();
-const DOWNLOADING_VIDEO_URL='https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/downloading.mp4';
+downloadInfoVideo();
 
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
@@ -176,12 +170,19 @@ async function resolveRD(token,hash,season,episode){
     console.log(`[RD] Resolving: ${hash}`);
     const tid=await rdAddMagnet(token,hash);if(!tid)return null;
     let info;
-    for(let i=0;i<15;i++){info=await rdInfo(token,tid);if(!info){await rdDelete(token,tid);return null;}
-        if(info.status==="downloaded"&&info.links?.length>0){const url=await rdUnrestrict(token,info.links[0]);if(url){resolveCache.set(ck,{url,ts:Date.now()});console.log("[RD] ✅ Cached");return url;}await rdDelete(token,tid);return null;}
+    // Krátké čekání na status (max 5s)
+    for(let i=0;i<5;i++){
+        info=await rdInfo(token,tid);if(!info){await rdDelete(token,tid);return null;}
+        if(info.status==="downloaded"&&info.links?.length>0){
+            const url=await rdUnrestrict(token,info.links[0]);
+            if(url){resolveCache.set(ck,{url,ts:Date.now()});console.log("[RD] ✅ Cached");return url;}
+            await rdDelete(token,tid);return null;
+        }
         if(info.status==="waiting_files_selection")break;
         if(["magnet_error","error","virus","dead"].includes(info.status)){await rdDelete(token,tid);return null;}
         await new Promise(r=>setTimeout(r,1000));
     }
+    // Výběr souborů
     if(info.status==="waiting_files_selection"&&info.files?.length>0){
         const videos=info.files.filter(f=>isVideo(f.path));let fid;
         if(videos.length===0)fid="all";
@@ -191,12 +192,24 @@ async function resolveRD(token,hash,season,episode){
             fid=hit?String(hit.id):String(videos.reduce((a,b)=>a.bytes>b.bytes?a:b).id);
         }else{fid=String(videos.reduce((a,b)=>a.bytes>b.bytes?a:b).id);}
         if(!(await rdSelect(token,tid,fid))){await rdDelete(token,tid);return null;}
-    }else if(info.status!=="downloaded"){await rdDelete(token,tid);return null;}
-    for(let i=0;i<30;i++){info=await rdInfo(token,tid);if(!info)return null;
-        if(info.status==="downloaded"&&info.links?.length>0){const url=await rdUnrestrict(token,info.links[0]);if(url){resolveCache.set(ck,{url,ts:Date.now()});console.log("[RD] ✅ Ready");return url;}return null;}
+    }else if(info.status!=="downloaded"){
+        // Torrent se stahuje, nečekej — vrať null → info video
+        console.log(`[RD] 🕐 Status: ${info.status} → stahuje se`);
+        return null;
+    }
+    // Rychlé čekání na hotový stav (max 5s pro už-cached torrenty)
+    for(let i=0;i<5;i++){
+        info=await rdInfo(token,tid);if(!info)return null;
+        if(info.status==="downloaded"&&info.links?.length>0){
+            const url=await rdUnrestrict(token,info.links[0]);
+            if(url){resolveCache.set(ck,{url,ts:Date.now()});console.log("[RD] ✅ Ready");return url;}
+            return null;
+        }
         if(["magnet_error","error","virus","dead"].includes(info.status)){await rdDelete(token,tid);return null;}
         await new Promise(r=>setTimeout(r,1000));
     }
+    // Stále se stahuje → info video
+    console.log(`[RD] 🕐 Stále se stahuje po 5s`);
     return null;
 }
 
@@ -233,7 +246,7 @@ app.get("/configure",(req,res)=>{res.setHeader("Content-Type","text/html; charse
 
 app.get("/:token/manifest.json",(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
-    res.json({id:"org.stremio.sktorrent.rd",version:"2.4.0",name:"SKTorrent+RD",description:"CZ/SK torrenty ze sktorrent.eu s Real-Debrid",types:["movie","series"],catalogs:[],resources:["stream"],idPrefixes:["tt"],behaviorHints:{configurable:true,configurationRequired:false}});
+    res.json({id:"org.stremio.sktorrent.rd",version:"2.4.0",name:"SKTorrent+RD",description:"CZ/SK torrenty ze sktorrent.eu s Real-Debrid",logo:"https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/logo.png",types:["movie","series"],catalogs:[],resources:["stream"],idPrefixes:["tt"],behaviorHints:{configurable:true,configurationRequired:false}});
 });
 
 // STREAM
@@ -562,5 +575,45 @@ function install(){const tok=getToken();if(!tok)return;window.location.href='str
 function copyUrl(){const tok=getToken();navigator.clipboard.writeText(B+'/'+tok+'/manifest.json').then(()=>{const c=document.querySelector('.cp');c.textContent='✅ Zkopírováno';setTimeout(()=>c.textContent='📋 Kopírovat URL',2000)})}
 document.getElementById('rd').addEventListener('keypress',e=>{if(e.key==='Enter')verify()});
 </script></body></html>`;}
+
+// ============ KEEP-ALIVE ============
+let keepAliveInterval=null;
+let serviceUrl='';
+
+function startKeepAlive(url){
+    if(keepAliveInterval)return; // Už běží
+    serviceUrl=url;
+    const now=new Date();
+    // Kolik ms do půlnoci
+    const midnight=new Date(now);
+    midnight.setHours(24,0,0,0);
+    const msUntilMidnight=midnight.getTime()-now.getTime();
+    
+    console.log(`[KeepAlive] ✅ Aktivní do půlnoci (${Math.round(msUntilMidnight/60000)} min)`);
+    
+    // Ping každých 10 minut
+    keepAliveInterval=setInterval(async()=>{
+        try{await axios.get(serviceUrl,{timeout:5000});console.log('[KeepAlive] 🏓 ping');}
+        catch(e){}
+    },600000); // 10 min
+    
+    // Zastav o půlnoci
+    setTimeout(()=>{
+        if(keepAliveInterval){
+            clearInterval(keepAliveInterval);
+            keepAliveInterval=null;
+            console.log('[KeepAlive] 😴 Půlnoc → usínám');
+        }
+    },msUntilMidnight);
+}
+
+// Middleware: první request aktivuje keep-alive
+app.use((req,res,next)=>{
+    if(!keepAliveInterval&&req.headers.host){
+        const proto=req.headers['x-forwarded-proto']||req.protocol;
+        startKeepAlive(`${proto}://${req.headers.host}/`);
+    }
+    next();
+});
 
 app.listen(PORT,()=>console.log(`🚀 SKTorrent+RD http://localhost:${PORT}`));
