@@ -311,6 +311,51 @@ function buildSearchNames(titles){
 
 // ============ EXPRESS ============
 const app=express();
+
+// ============ KEEP-ALIVE ============
+let keepAliveInterval=null;
+let serviceUrl='';
+
+function startKeepAlive(url){
+    if(keepAliveInterval)return;
+    serviceUrl=url;
+    const now=new Date();
+    const midnight=new Date(now);
+    midnight.setHours(24,0,0,0);
+    const msUntilMidnight=midnight.getTime()-now.getTime();
+    
+    console.log(`[KeepAlive] ✅ Aktivní do půlnoci (${Math.round(msUntilMidnight/60000)} min)`);
+    console.log(`[KeepAlive] 🔗 URL: ${serviceUrl}`);
+    
+    keepAliveInterval=setInterval(async()=>{
+        try{
+            const r=await axios.get(serviceUrl,{timeout:8000});
+            console.log(`[KeepAlive] 🏓 ping OK (${r.status})`);
+        }catch(e){
+            console.log(`[KeepAlive] ❌ ping failed: ${e.message}`);
+        }
+    },600000); // 10 min
+    
+    setTimeout(()=>{
+        if(keepAliveInterval){
+            clearInterval(keepAliveInterval);
+            keepAliveInterval=null;
+            console.log('[KeepAlive] 😴 Půlnoc → usínám');
+        }
+    },msUntilMidnight);
+}
+
+// Middleware: první request aktivuje keep-alive
+app.use((req,res,next)=>{
+    if(!keepAliveInterval&&req.headers.host){
+        const proto=req.headers['x-forwarded-proto']||req.protocol;
+        const host=req.headers['x-forwarded-host']||req.get('host');
+        console.log(`[KeepAlive] 🔄 První request od ${host}`);
+        startKeepAlive(`${proto}://${host}/`);
+    }
+    next();
+});
+
 app.get("/",(req,res)=>{res.setHeader("Content-Type","text/html; charset=utf-8");res.send(html());});
 app.get("/configure",(req,res)=>{res.setHeader("Content-Type","text/html; charset=utf-8");res.send(html());});
 
@@ -811,51 +856,5 @@ function install(){const tok=getToken();if(!tok)return;window.location.href='str
 function copyUrl(){const tok=getToken();navigator.clipboard.writeText(B+'/'+tok+'/manifest.json').then(()=>{const c=document.querySelector('.cp');c.textContent='✅ Zkopírováno';setTimeout(()=>c.textContent='📋 Kopírovat URL',2000)})}
 document.getElementById('rd').addEventListener('keypress',e=>{if(e.key==='Enter')verify()});
 </script></body></html>`;}
-
-// ============ KEEP-ALIVE ============
-let keepAliveInterval=null;
-let serviceUrl='';
-
-function startKeepAlive(url){
-    if(keepAliveInterval)return;
-    serviceUrl=url;
-    const now=new Date();
-    const midnight=new Date(now);
-    midnight.setHours(24,0,0,0);
-    const msUntilMidnight=midnight.getTime()-now.getTime();
-    
-    console.log(`[KeepAlive] ✅ Aktivní do půlnoci (${Math.round(msUntilMidnight/60000)} min)`);
-    console.log(`[KeepAlive] 🔗 URL: ${serviceUrl}`);
-    
-    // Ping každých 5 minut (Render uspí po 15min)
-    keepAliveInterval=setInterval(async()=>{
-        try{
-            const r=await axios.get(serviceUrl,{timeout:8000});
-            console.log(`[KeepAlive] 🏓 ping OK (${r.status})`);
-        }catch(e){
-            console.log(`[KeepAlive] ❌ ping failed: ${e.message}`);
-        }
-    },600000); // 10 min
-    
-    // Zastav o půlnoci
-    setTimeout(()=>{
-        if(keepAliveInterval){
-            clearInterval(keepAliveInterval);
-            keepAliveInterval=null;
-            console.log('[KeepAlive] 😴 Půlnoc → usínám');
-        }
-    },msUntilMidnight);
-}
-
-// Middleware: první request aktivuje keep-alive
-app.use((req,res,next)=>{
-    if(!keepAliveInterval&&req.headers.host){
-        const proto=req.headers['x-forwarded-proto']||req.protocol;
-        const host=req.headers['x-forwarded-host']||req.get('host');
-        console.log(`[KeepAlive] 🔄 První request od ${host}`);
-        startKeepAlive(`${proto}://${host}/`);
-    }
-    next();
-});
 
 app.listen(PORT,()=>console.log(`🚀 SKTorrent+RD http://localhost:${PORT}`));
