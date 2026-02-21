@@ -264,7 +264,13 @@ app.get("/:token/manifest.json",(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{sktSearch}=parseToken(req.params.token);
     const catalogs=sktSearch?[{type:"movie",id:"skt-search",name:"SKTorrent",extra:[{name:"search",isRequired:true}]}]:[];
-    const resources=sktSearch?["stream","catalog","meta"]:["stream"];
+    const resources=sktSearch?[
+        {name:"stream",types:["movie","series"],idPrefixes:["tt","skt"]},
+        {name:"catalog",types:["movie"],idPrefixes:["skt"]},
+        {name:"meta",types:["movie"],idPrefixes:["skt"]}
+    ]:[
+        {name:"stream",types:["movie","series"],idPrefixes:["tt"]}
+    ];
     res.json({
         id:"org.stremio.sktorrent.rd",
         version:"2.5.0",
@@ -274,7 +280,6 @@ app.get("/:token/manifest.json",(req,res)=>{
         types:["movie","series"],
         catalogs,
         resources,
-        idPrefixes:["tt","skt"],
         behaviorHints:{configurable:true,configurationRequired:false}
     });
 });
