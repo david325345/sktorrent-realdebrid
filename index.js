@@ -478,8 +478,8 @@ input{width:100%;padding:14px;border-radius:12px;border:1px solid rgba(255,255,2
 <div class="sec">🔓 SKTorrent účet (volitelné)</div>
 <div class="opt" style="margin-top:0;margin-bottom:12px">⚠️ Bez účtu najde addon méně výsledků. S účtem na sktorrent.eu se zobrazí i omezený obsah.</div>
 <div class="row">
-<div><label>Jméno</label><input type="text" id="skt_user" placeholder="SKT jméno..." autocomplete="off"></div>
-<div><label>Heslo</label><input type="password" id="skt_pass" placeholder="SKT heslo..." autocomplete="off"></div>
+<div><label>Jméno</label><input type="text" id="skt_user" name="username" placeholder="SKT jméno..." autocomplete="username"></div>
+<div><label>Heslo</label><input type="password" id="skt_pass" name="password" placeholder="SKT heslo..." autocomplete="current-password"></div>
 </div>
 <button class="btn bs" onclick="sktLogin()" id="skt_btn">🔓 Přihlásit na SKTorrent</button>
 <div class="st" id="skt_st"></div>
