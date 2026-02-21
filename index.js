@@ -326,10 +326,12 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
 app.get("/:token/meta/:type/:id.json",async(req,res)=>{
     res.setHeader("Access-Control-Allow-Origin","*");res.setHeader("Access-Control-Allow-Headers","*");res.setHeader("Content-Type","application/json");
     const{id}=req.params;
+    console.log(`[META] id="${id}" type="${req.params.type}"`);
     
     if(!id.startsWith("skt")||id.length<10)return res.json({meta:null});
     const hash=id.replace(/^skt/,"");
     const t=sktSearchCache.get(hash);
+    console.log(`[META] hash=${hash} cache=${!!t} poster=${t?.poster?.slice(0,50)||'none'}`);
     
     if(!t)return res.json({meta:{id,type:"movie",name:hash,description:"Torrent z SKTorrent"}});
     
@@ -339,14 +341,16 @@ app.get("/:token/meta/:type/:id.json",async(req,res)=>{
     const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
     const flagStr=flags.length?` ${flags.join("/")}`:""
     
+    const poster=t.poster||undefined;
     return res.json({meta:{
         id,
         type:"movie",
         name:clean,
-        poster:t.poster||undefined,
+        poster,
         posterShape:"regular",
         description:`📁 Kategorie: ${t.cat||'SKT'}\n📀 Velikost: ${t.size}\n👤 Seeds: ${t.seeds}${flagStr}\n\n${t.name}`,
-        background:t.poster||undefined
+        background:poster,
+        logo:poster
     }});
 });
 
