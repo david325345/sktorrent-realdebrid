@@ -180,6 +180,58 @@ async function downloadInfoVideo(){
 }
 downloadInfoVideo();
 
+// Resolve všechny video soubory z torrentu (pro SKT přímé hledání)
+async function resolveRDAll(token,hash){
+    console.log(`[RD] Resolving ALL: ${hash}`);
+    const tid=await rdAddMagnet(token,hash);if(!tid)return null;
+    let info;
+    for(let i=0;i<5;i++){
+        info=await rdInfo(token,tid);if(!info){await rdDelete(token,tid);return null;}
+        if(info.status==="downloaded"&&info.links?.length>0)break;
+        if(info.status==="waiting_files_selection")break;
+        if(["magnet_error","error","virus","dead"].includes(info.status)){await rdDelete(token,tid);return null;}
+        await new Promise(r=>setTimeout(r,1000));
+    }
+    if(info.status==="waiting_files_selection"&&info.files?.length>0){
+        const videos=info.files.filter(f=>isVideo(f.path));
+        if(videos.length===0){await rdDelete(token,tid);return null;}
+        if(videos.length===1){
+            // Jeden soubor — standardní resolve
+            if(!(await rdSelect(token,tid,String(videos[0].id)))){await rdDelete(token,tid);return null;}
+        }else{
+            // Batch — vyber všechny video soubory
+            const fids=videos.map(f=>String(f.id)).join(",");
+            if(!(await rdSelect(token,tid,fids))){await rdDelete(token,tid);return null;}
+        }
+    }else if(info.status!=="downloaded"){
+        return {status:"downloading",files:[]};
+    }
+    for(let i=0;i<5;i++){
+        info=await rdInfo(token,tid);if(!info)return null;
+        if(info.status==="downloaded"&&info.links?.length>0)break;
+        if(["magnet_error","error","virus","dead"].includes(info.status)){await rdDelete(token,tid);return null;}
+        await new Promise(r=>setTimeout(r,1000));
+    }
+    if(info.status!=="downloaded"||!info.links?.length)return {status:"downloading",files:[]};
+    
+    // Mapuj linky na soubory
+    const selected=(info.files||[]).filter(f=>f.selected===1&&isVideo(f.path));
+    const results=[];
+    // RD vrací linky v pořadí vybraných souborů
+    for(let i=0;i<info.links.length;i++){
+        const url=await rdUnrestrict(token,info.links[i]);
+        if(url){
+            const file=selected[i];
+            const fname=file?.path?.split('/')?.pop()||`Soubor ${i+1}`;
+            const bytes=file?.bytes||0;
+            const sizeMB=bytes>0?`${(bytes/1048576).toFixed(0)} MB`:'';
+            results.push({url,filename:fname,size:sizeMB});
+        }
+    }
+    console.log(`[RD] ✅ ${results.length} souborů`);
+    return {status:"ready",files:results};
+}
+
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
     if(cached&&Date.now()-cached.ts<CACHE_TTL){console.log("[RD] ✅ Cache hit");return cached.url;}
@@ -375,39 +427,47 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         const hash=id.replace(/^skt/,"");
         const t=sktSearchCache.get(hash);
         
-        let name='SKT+RD';
-        let desc='⚡ Real-Debrid';
+        let baseName='SKT+RD';
         let thumb=undefined;
         if(t){
-            let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
-            if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
-            const flags=(t.name.match(/\b([A-Z]{2})\b/g)||[]).map(c=>langToFlag[c]).filter(Boolean);
-            const flagStr=flags.length?` ${flags.join("/")}`:""
-            name=`SKT+RD\n${t.cat||'SKT'}`;
-            desc=`${clean}\n👤 ${t.seeds}  📀 ${t.size}${flagStr}\n⚡ Real-Debrid`;
+            baseName=`SKT+RD\n${t.cat||'SKT'}`;
             thumb=t.poster||undefined;
         }
         
         console.log(`\n🎬 SKT stream: ${hash}`);
         
-        // Rovnou resolve RD — vrátit přímý URL
-        const streamUrl=await resolveRD(rdToken,hash);
-        if(streamUrl){
-            console.log(`[SKT] ✅ RD ready → direct URL`);
-            const stream={name,description:desc,url:streamUrl,behaviorHints:{notWebReady:true}};
+        const result=await resolveRDAll(rdToken,hash);
+        
+        if(!result||result.status==="downloading"){
+            const proto=req.headers['x-forwarded-proto']||req.protocol;
+            const host=req.headers['x-forwarded-host']||req.get('host');
+            const proxyUrl=`${proto}://${host}/${req.params.token}/play/${hash}/video.mp4`;
+            console.log(`[SKT] 🕐 Stahuje se`);
+            const stream={name:baseName,description:`🕐 Torrent se stahuje...\nZkuste za chvíli znovu.\n⚡ Real-Debrid`,url:proxyUrl,behaviorHints:{notWebReady:true}};
             if(thumb)stream.thumbnail=thumb;
             return res.json({streams:[stream]});
         }
         
-        // Není v cache — proxy URL pro normální Stremio, + info stream
-        const proto=req.headers['x-forwarded-proto']||req.protocol;
-        const host=req.headers['x-forwarded-host']||req.get('host');
-        const baseUrl=`${proto}://${host}`;
-        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
-        console.log(`[SKT] 🕐 Stahuje se`);
-        const stream={name,description:`🕐 Torrent se stahuje...\nZkuste za chvíli znovu.\n⚡ Real-Debrid`,url:proxyUrl,behaviorHints:{notWebReady:true}};
-        if(thumb)stream.thumbnail=thumb;
-        return res.json({streams:[stream]});
+        if(result.files.length===1){
+            console.log(`[SKT] ✅ 1 soubor`);
+            const f=result.files[0];
+            const stream={name:baseName,description:`${f.filename}\n📀 ${f.size}\n⚡ Real-Debrid`,url:f.url,behaviorHints:{notWebReady:true}};
+            if(thumb)stream.thumbnail=thumb;
+            return res.json({streams:[stream]});
+        }
+        
+        console.log(`[SKT] ✅ ${result.files.length} souborů (batch)`);
+        const streams=result.files.map((f,i)=>{
+            const stream={
+                name:`SKT+RD\n📁 ${i+1}/${result.files.length}`,
+                description:`${f.filename}\n📀 ${f.size}\n⚡ Real-Debrid`,
+                url:f.url,
+                behaviorHints:{notWebReady:true}
+            };
+            if(thumb)stream.thumbnail=thumb;
+            return stream;
+        });
+        return res.json({streams});
     }
     
     // Normální IMDb stream (stávající logika)
