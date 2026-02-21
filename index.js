@@ -315,6 +315,7 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
             type:"movie",
             name:clean,
             poster:t.poster||undefined,
+            background:t.poster||"https://raw.githubusercontent.com/david325345/sktorrent-realdebrid/main/public/logo.png",
             description:`📁 ${t.cat||'SKT'}  📀 ${t.size}  👤 ${t.seeds}${flagStr}`,
             posterShape:"regular"
         };
@@ -363,15 +364,11 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     console.log(`\n[STREAM] raw id="${id}" type="${type}"`);
     const{rdToken,tmdbKey,sktUid,sktPass}=parseToken(req.params.token);
     
-    // SKT přímý stream (z catalog search) - normální Stremio
+    // SKT přímý stream (z catalog search)
     if(id.startsWith("skt")&&id.length>10){
         console.log(`[STREAM] ✅ skt: prefix detected`);
         const hash=id.replace(/^skt/,"");
         const t=sktSearchCache.get(hash);
-        const proto=req.headers['x-forwarded-proto']||req.protocol;
-        const host=req.headers['x-forwarded-host']||req.get('host');
-        const baseUrl=`${proto}://${host}`;
-        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
         
         let name='SKT+RD';
         let desc='⚡ Real-Debrid';
@@ -387,7 +384,23 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
         }
         
         console.log(`\n🎬 SKT stream: ${hash}`);
-        const stream={name,description:desc,url:proxyUrl,behaviorHints:{bingeGroup:`skt-rd-${hash.slice(0,8)}`,notWebReady:true}};
+        
+        // Rovnou resolve RD — vrátit přímý URL
+        const streamUrl=await resolveRD(rdToken,hash);
+        if(streamUrl){
+            console.log(`[SKT] ✅ RD ready → direct URL`);
+            const stream={name,description:desc,url:streamUrl,behaviorHints:{notWebReady:true}};
+            if(thumb)stream.thumbnail=thumb;
+            return res.json({streams:[stream]});
+        }
+        
+        // Není v cache — proxy URL pro normální Stremio, + info stream
+        const proto=req.headers['x-forwarded-proto']||req.protocol;
+        const host=req.headers['x-forwarded-host']||req.get('host');
+        const baseUrl=`${proto}://${host}`;
+        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
+        console.log(`[SKT] 🕐 Stahuje se`);
+        const stream={name,description:`🕐 Torrent se stahuje...\nZkuste za chvíli znovu.\n⚡ Real-Debrid`,url:proxyUrl,behaviorHints:{notWebReady:true}};
         if(thumb)stream.thumbnail=thumb;
         return res.json({streams:[stream]});
     }
@@ -396,41 +409,6 @@ app.get("/:token/stream/:type/:id.json",async(req,res)=>{
     const[imdbId,sRaw,eRaw]=id.split(":");
     console.log(`[STREAM] split: imdbId="${imdbId}" sRaw="${sRaw}" eRaw="${eRaw}"`);
     const season=sRaw?parseInt(sRaw):undefined;const episode=eRaw?parseInt(eRaw):undefined;
-    
-    // Omni/Apple TV: ID je "sktHASH" jako celý imdbId (nebo jen "skt" pokud Omni ořízne)
-    if(imdbId.startsWith("skt")&&imdbId.length>10){
-        const hash=imdbId.replace(/^skt/,"").toLowerCase();
-        const t=sktSearchCache.get(hash);
-        console.log(`\n🎬 [Omni] SKT stream: ${hash} (cache: ${!!t})`);
-        
-        // Rovnou resolve přes RD a vrátit přímý URL
-        const streamUrl=await resolveRD(rdToken,hash);
-        if(streamUrl){
-            let name='SKT+RD';
-            let desc='⚡ Real-Debrid';
-            if(t){
-                let clean=t.name.replace(/^Stiahni si\s*/i,"").trim();
-                if(t.cat&&clean.startsWith(t.cat))clean=clean.slice(t.cat.length).trim();
-                name=`SKT+RD\n${t.cat||'SKT'}`;
-                desc=`${clean}\n⚡ Real-Debrid`;
-            }
-            console.log(`[Omni] ✅ Direct URL`);
-            return res.json({streams:[{
-                name,description:desc,url:streamUrl,
-                behaviorHints:{notWebReady:true}
-            }]});
-        }
-        // Torrent se stahuje — vrať proxy URL jako fallback
-        const proto=req.headers['x-forwarded-proto']||req.protocol;
-        const host=req.headers['x-forwarded-host']||req.get('host');
-        const baseUrl=`${proto}://${host}`;
-        const proxyUrl=`${baseUrl}/${req.params.token}/play/${hash}/video.mp4`;
-        console.log(`[Omni] 🕐 Stahuje se → proxy URL`);
-        return res.json({streams:[{
-            name:'SKT+RD',description:'🕐 Torrent se stahuje...\n⚡ Real-Debrid',url:proxyUrl,
-            behaviorHints:{notWebReady:true}
-        }]});
-    }
     
     console.log(`\n🎬 ${type} ${imdbId} S${season??'-'}E${episode??'-'}`);
     try{
