@@ -244,7 +244,11 @@ async function resolveRDAll(token,hash){
 
 async function resolveRD(token,hash,season,episode){
     const ck=`${hash}-${season}-${episode}`;const cached=resolveCache.get(ck);
-    if(cached&&Date.now()-cached.ts<CACHE_TTL){console.log("[RD] ✅ Cache hit");return cached.url;}
+    if(cached&&Date.now()-cached.ts<CACHE_TTL){
+        if(cached.url){console.log("[RD] ✅ Cache hit");return cached.url;}
+        // Downloading stav cache (30s)
+        if(cached.downloading&&Date.now()-cached.ts<30000){console.log("[RD] ⏸️ Downloading (cached)");return null;}
+    }
     console.log(`[RD] Resolving: ${hash}`);
     const tid=await rdAddMagnet(token,hash);if(!tid)return null;
     let info;
@@ -271,8 +275,8 @@ async function resolveRD(token,hash,season,episode){
         }else{fid=String(videos.reduce((a,b)=>a.bytes>b.bytes?a:b).id);}
         if(!(await rdSelect(token,tid,fid))){await rdDelete(token,tid);return null;}
     }else if(info.status!=="downloaded"){
-        // Torrent se stahuje, nečekej — vrať null → info video
         console.log(`[RD] 🕐 Status: ${info.status} → stahuje se`);
+        resolveCache.set(ck,{downloading:true,ts:Date.now()});
         return null;
     }
     // Rychlé čekání na hotový stav (max 5s pro už-cached torrenty)
@@ -288,6 +292,7 @@ async function resolveRD(token,hash,season,episode){
     }
     // Stále se stahuje → info video
     console.log(`[RD] 🕐 Stále se stahuje po 5s`);
+    resolveCache.set(ck,{downloading:true,ts:Date.now()});
     return null;
 }
 
