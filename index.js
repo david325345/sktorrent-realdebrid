@@ -683,12 +683,7 @@ app.get("/:token/play/:hash/:season?/:episode?/video.mp4",async(req,res)=>{
     console.log(`\n▶️ Play: ${hash} S${season??'-'}E${episode??'-'}`);
     const streamUrl=await resolveRD(rdToken,hash,season,episode);
     if(!streamUrl){
-        console.log("[Play] 🕐 Torrent se stahuje → info video");
-        if(fs.existsSync(INFO_VIDEO_PATH)){
-            res.setHeader('Content-Type','video/mp4');
-            res.setHeader('Content-Length',fs.statSync(INFO_VIDEO_PATH).size);
-            return fs.createReadStream(INFO_VIDEO_PATH).pipe(res);
-        }
+        console.log("[Play] 🕐 Torrent se stahuje → redirect na info video");
         return res.redirect(302,DOWNLOADING_VIDEO_URL);
     }
     console.log(`[Play] ✅ Redirect → ${streamUrl.slice(0,80)}...`);
