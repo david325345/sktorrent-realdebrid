@@ -181,7 +181,13 @@ async function downloadInfoVideo(){
 downloadInfoVideo();
 
 // Resolve všechny video soubory z torrentu (pro SKT přímé hledání)
+const resolveAllCache=new Map();
 async function resolveRDAll(token,hash){
+    const cached=resolveAllCache.get(hash);
+    if(cached&&Date.now()-cached.ts<CACHE_TTL){
+        console.log(`[RD] ✅ ALL cache hit (${cached.files.length} souborů)`);
+        return cached;
+    }
     console.log(`[RD] Resolving ALL: ${hash}`);
     const tid=await rdAddMagnet(token,hash);if(!tid)return null;
     let info;
@@ -231,7 +237,9 @@ async function resolveRDAll(token,hash){
     console.log(`[RD] ✅ ${results.length} souborů`);
     // Seřadit podle názvu souboru (přirozené řazení)
     results.sort((a,b)=>a.filename.localeCompare(b.filename,undefined,{numeric:true}));
-    return {status:"ready",files:results};
+    const result={status:"ready",files:results,ts:Date.now()};
+    resolveAllCache.set(hash,result);
+    return result;
 }
 
 async function resolveRD(token,hash,season,episode){
