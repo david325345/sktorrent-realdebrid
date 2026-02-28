@@ -415,7 +415,12 @@ app.get("/:token/catalog/:type/:id/:extra.json",async(req,res)=>{
     const results=await searchSKT(query,sktUid,sktPass);
     if(!results.length)return res.json({metas:[]});
     
-    const metas=results.map((t,i)=>{
+    // Filtruj nežádoucí kategorie
+    const excludedCats=/xXx|Knihy|Časopisy|Ostatní|Game Hall|Audio.*video|Soft.*app|Externe/i;
+    const filtered=results.filter(t=>!excludedCats.test(t.cat));
+    if(!filtered.length)return res.json({metas:[]});
+    
+    const metas=filtered.map((t,i)=>{
         // Uložit do cache pro meta/stream endpoint
         sktSearchCache.set(t.hash,t);
         
